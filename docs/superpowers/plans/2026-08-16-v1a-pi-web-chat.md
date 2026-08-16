@@ -132,8 +132,7 @@ Use this Web manifest:
   "scripts": {
     "dev": "vite",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "build": "vite build"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "react": "19.2.8",
@@ -457,6 +456,7 @@ git commit -m "feat: stream pi chat events over sse"
 - Create: `apps/web/src/components/Composer.tsx`
 - Create: `apps/web/src/App.test.tsx`
 - Create: `apps/web/src/styles.css`
+- Modify: `apps/web/package.json` (add the `build` script after `index.html` exists)
 
 - [ ] **Step 1: Write the failing UI test**
 
@@ -491,7 +491,9 @@ Expected: FAIL because the chat components do not exist.
 
 Render user/assistant messages in the main column. Render citations as links carrying document title, publication date, and locator. Put tool progress and errors in a collapsed `ResearchTrace`; show Stop only while a run is active. Preserve draft text when the connection drops.
 
-- [ ] **Step 5: Run UI tests and build**
+- [ ] **Step 5: Add the Vite build script, then run UI tests and build**
+
+Add `"build": "vite build"` to `apps/web/package.json` now that `apps/web/index.html` and `apps/web/src/main.tsx` exist.
 
 Run: `pnpm --filter @ira/web test && pnpm --filter @ira/web typecheck && pnpm --filter @ira/web build`
 
