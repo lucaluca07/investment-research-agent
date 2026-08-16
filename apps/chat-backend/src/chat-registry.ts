@@ -78,6 +78,7 @@ export class ChatRegistry {
         result = { status: "replayed", runId };
         return;
       }
+      if (run.status === "failed" && run.replayed) throw new Error("run failed and is retryable with a new idempotency key");
       if (run.status === "running" && run.replayed) throw new Error("chat already has an active run; retryable");
       await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
       const generation = state.generation;
