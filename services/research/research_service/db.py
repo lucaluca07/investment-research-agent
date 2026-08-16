@@ -27,5 +27,10 @@ class Database:
             else:
                 self.connection.execute("COMMIT")
 
+    @contextmanager
+    def read(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        with self._transaction_lock:
+            yield self.connection
+
     def close(self) -> None:
         self.connection.close()

@@ -1,14 +1,17 @@
+import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from .db import Database
 from .runs import IllegalTransition, RunStore
 from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixture_citations
+
+logger = logging.getLogger(__name__)
 
 
 class ChatRequest(BaseModel):
@@ -30,19 +33,26 @@ class SnapshotRequest(BaseModel):
 
 
 class NoteRequest(BaseModel):
-    run_id: str
-    idempotency_key: str
-    title: str
-    body: str
-    citation_ids: list[str]
+    run_id: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    body: str = Field(min_length=1)
+    citation_ids: list[str] = Field(min_length=1)
 
 
 class MessageRequest(BaseModel):
-    role: str
-    content: str
+    role: Literal["user", "assistant", "tool"]
+    content: str = Field(min_length=1)
+
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("content must not be blank")
+        return value
 
 
-def create_app(database_path: str = ":memory:") -> FastAPI:
+def create_app(database_path: str = ":memory:", test_mode: bool = False) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         database = Database(database_path)
@@ -74,6 +84,8 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
         x_ira_test_fail_after_note: str | None = Header(default=None),
     ) -> dict[str, Any]:
         run_store = store(request)
+        if len(payload.citation_ids) != len(set(payload.citation_ids)):
+            raise HTTPException(status_code=422, detail="duplicate citation id")
         if not citation_ids_exist(run_store, payload.citation_ids):
             raise HTTPException(status_code=422, detail="invalid citation id")
         try:
@@ -85,14 +97,16 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
                 payload.body,
                 payload.citation_ids,
                 fault_after_note=(
-                    os.getenv("IRA_TEST_MODE") == "1"
+                    test_mode
+                    and os.getenv("IRA_TEST_MODE") == "1"
                     and x_ira_test_fail_after_note == "1"
                 ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (KeyError, IllegalTransition) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            code = 404 if isinstance(exc, KeyError) else 409
+            raise HTTPException(status_code=code, detail="run not found" if code == 404 else str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -129,8 +143,13 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
     def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:
         try:
             run = store(request).create_run(payload.chat_id, payload.pi_session_id, payload.model)
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="invalid research run request") from exc
+        except Exception:
+            logger.exception("failed to create research run")
+            raise HTTPException(status_code=500, detail="internal server error") from None
         return {
             "id": run.id, "chat_id": run.chat_id, "pi_session_id": run.pi_session_id,
             "model": run.model, "created_at": run.created_at,
@@ -138,17 +157,20 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
 
     @app.patch("/v1/chats/{chat_id}/pi-session")
     def update_pi_session(chat_id: str, payload: PiSessionRequest, request: Request) -> dict[str, str]:
-        store(request).update_pi_session(chat_id, payload.pi_session_id)
+        try:
+            store(request).update_pi_session(chat_id, payload.pi_session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
         return {"chat_id": chat_id, "pi_session_id": payload.pi_session_id}
 
     @app.get("/v1/test/counts")
     def counts(request: Request) -> dict[str, int]:
         if os.getenv("IRA_TEST_MODE") != "1":
             raise HTTPException(status_code=404, detail="not found")
-        connection = store(request).database.connection
-        return {
-            table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            for table in ("chats", "research_runs", "research_run_steps", "research_notes", "citations")
-        }
+        with store(request).database.read() as connection:
+            return {
+                table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("chats", "research_runs", "research_run_steps", "research_notes", "citations")
+            }
 
     return app

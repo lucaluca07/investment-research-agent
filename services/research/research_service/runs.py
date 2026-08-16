@@ -41,7 +41,7 @@ class RunStore:
 
     def update_pi_session(self, chat_id: str, pi_session_id: str) -> None:
         with self.database.transaction() as connection:
-            self.create_chat_in_transaction(connection, chat_id)
+            self._require_chat(connection, chat_id)
             connection.execute("UPDATE chats SET pi_session_id = ? WHERE id = ?", [pi_session_id, chat_id])
 
     def append_message(self, chat_id: str, role: str, content: str) -> ChatMessage:
@@ -81,6 +81,8 @@ class RunStore:
         fault_after_note: bool = False,
     ) -> dict[str, Any]:
         with self.database.transaction() as connection:
+            if connection.execute("SELECT 1 FROM research_runs WHERE id = ?", [run_id]).fetchone() is None:
+                raise KeyError(run_id)
             existing = connection.execute(
                 "SELECT id, status, input_hash, result_json FROM research_run_steps "
                 "WHERE run_id = ? AND idempotency_key = ?",
@@ -145,11 +147,12 @@ class RunStore:
         return ResearchRunStep(step_id, run_id, step_name, "running", idempotency_key, input_hash)
 
     def get_step(self, step_id: str) -> ResearchRunStep:
-        row = self.database.connection.execute(
-            "SELECT id, run_id, step_name, status, idempotency_key, input_hash, "
-            "result_json, error_json, retryable FROM research_run_steps WHERE id = ?",
-            [step_id],
-        ).fetchone()
+        with self.database.read() as connection:
+            row = connection.execute(
+                "SELECT id, run_id, step_name, status, idempotency_key, input_hash, "
+                "result_json, error_json, retryable FROM research_run_steps WHERE id = ?",
+                [step_id],
+            ).fetchone()
         if row is None:
             raise KeyError(step_id)
         return self._step_from_row_values(row)
@@ -172,11 +175,12 @@ class RunStore:
         self._resolve_approval(step_id, "rejected", actor, reason, "cancelled")
 
     def get_approval(self, step_id: str) -> ApprovalRequest:
-        row = self.database.connection.execute(
-            "SELECT id, step_id, status, payload_json, actor, reason "
-            "FROM approval_requests WHERE step_id = ? ORDER BY created_at DESC LIMIT 1",
-            [step_id],
-        ).fetchone()
+        with self.database.read() as connection:
+            row = connection.execute(
+                "SELECT id, step_id, status, payload_json, actor, reason "
+                "FROM approval_requests WHERE step_id = ? ORDER BY created_at DESC LIMIT 1",
+                [step_id],
+            ).fetchone()
         if row is None:
             raise KeyError(step_id)
         return ApprovalRequest(row[0], row[1], row[2], _json_object(row[3]) or {}, row[4], row[5])

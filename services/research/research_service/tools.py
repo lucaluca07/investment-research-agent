@@ -41,7 +41,8 @@ def seed_fixture_citations(run_store: RunStore) -> None:
 def citation_ids_exist(run_store: RunStore, citation_ids: list[str]) -> bool:
     if not citation_ids:
         return False
-    count = run_store.database.connection.execute(
-        "SELECT COUNT(*) FROM citations WHERE id IN (SELECT UNNEST(?))", [citation_ids]
-    ).fetchone()[0]
+    with run_store.database.read() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM citations WHERE id IN (SELECT UNNEST(?))", [citation_ids]
+        ).fetchone()[0]
     return count == len(set(citation_ids))

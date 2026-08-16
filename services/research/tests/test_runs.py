@@ -105,6 +105,34 @@ def test_transactions_on_one_connection_are_serialized(store):
     assert finished.is_set()
 
 
+def test_reads_wait_for_a_write_transaction(store):
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def hold_write():
+        with store.database.transaction():
+            entered.set()
+            release.wait(timeout=2)
+
+    def read_connection():
+        with store.database.read() as connection:
+            connection.execute("SELECT 1").fetchone()
+        finished.set()
+
+    writer = threading.Thread(target=hold_write)
+    reader = threading.Thread(target=read_connection)
+    writer.start()
+    assert entered.wait(timeout=2)
+    reader.start()
+    time.sleep(0.05)
+    assert not finished.is_set()
+    release.set()
+    writer.join(timeout=2)
+    reader.join(timeout=2)
+    assert finished.is_set()
+
+
 def test_transaction_rolls_back_failed_write(store):
     with pytest.raises(RuntimeError), store.database.transaction() as connection:
         connection.execute("INSERT INTO chats (id) VALUES ('rollback-chat')")
