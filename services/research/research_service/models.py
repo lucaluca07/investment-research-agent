@@ -14,6 +14,8 @@ class ResearchRun:
     pi_session_id: str
     model: str
     created_at: datetime | None = None
+    status: Literal["running", "succeeded", "failed", "cancelled"] = "running"
+    error: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

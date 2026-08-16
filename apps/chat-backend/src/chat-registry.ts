@@ -9,6 +9,7 @@ type SessionLike = {
 };
 
 type ChatState = {
+  sessionId: string;
   session?: SessionLike;
   unsubscribe?: () => void;
   activeRunId?: string;
@@ -17,6 +18,7 @@ type ChatState = {
   subscribers: Set<(event: ChatEvent) => void>;
   idempotency: Map<string, { runId: string }>;
   assistantText: Map<string, string>;
+  queue: Promise<void>;
 };
 
 export class ChatRegistry {
@@ -30,8 +32,12 @@ export class ChatRegistry {
 
   addChat(chatId: string): void {
     if (!this.chats.has(chatId)) {
-      this.chats.set(chatId, { nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map() });
+      this.chats.set(chatId, { sessionId: chatId, nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map(), queue: Promise.resolve() });
     }
+  }
+
+  async restore(): Promise<void> {
+    for (const chat of await this.researchClient.listChats()) this.addChat(chat.id);
   }
 
   hasChat(chatId: string): boolean {
@@ -54,20 +60,36 @@ export class ChatRegistry {
     const previous = state.idempotency.get(idempotencyKey);
     if (previous) return { status: "replayed", runId: previous.runId };
     if (state.activeRunId) throw new Error("chat already has an active run");
-    const session = await this.getSession(chatId, state);
-    await this.researchClient.appendMessage(chatId, { role: "user", content });
-    const run = await this.researchClient.createRun({
-      chat_id: chatId,
-      pi_session_id: chatId,
-      model: process.env.IRA_PI_MODEL ?? "configured-model",
-    });
-    const runId = String(run.id);
-    state.activeRunId = runId;
-    state.idempotency.set(idempotencyKey, { runId });
-    this.emit(chatId, "run.started", { run_id: runId });
-    state.assistantText.set(runId, "");
-    void this.runPrompt(chatId, state, session, content, runId);
-    return { status: "accepted", runId };
+    let result: { status: "accepted" | "replayed"; runId: string };
+    let resolve!: () => void;
+    const turn = new Promise<void>((r) => { resolve = r; });
+    const previousQueue = state.queue;
+    state.queue = previousQueue.then(async () => {
+      if (state.activeRunId) throw new Error("chat already has an active run");
+      const session = await this.getSession(chatId, state);
+      await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
+      const run = await this.researchClient.createRun({ chat_id: chatId, pi_session_id: state.sessionId, model: process.env.IRA_PI_MODEL ?? "configured-model" });
+      const runId = String(run.id);
+      state.activeRunId = runId;
+      state.idempotency.set(idempotencyKey, { runId });
+      this.emit(chatId, "run.started", { run_id: runId });
+      state.assistantText.set(runId, "");
+      void this.runPrompt(chatId, state, session, content, runId);
+      result = { status: "accepted", runId };
+    }).finally(resolve);
+    await previousQueue;
+    await turn;
+    return result!;
+  }
+
+  async stop(chatId: string): Promise<{ runId: string }> {
+    const state = this.requireChat(chatId);
+    const runId = state.activeRunId;
+    if (!runId) throw new Error("chat has no active run");
+    if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled");
+    state.activeRunId = undefined;
+    this.emit(chatId, "run.cancelled", { run_id: runId });
+    return { runId };
   }
 
   private async runPrompt(chatId: string, state: ChatState, session: SessionLike, content: string, runId: string) {
@@ -78,8 +100,10 @@ export class ChatRegistry {
         if (content) await this.researchClient.appendMessage(chatId, { role: "assistant", content });
         this.emit(chatId, "message.completed", { run_id: runId, content });
         this.emit(chatId, "run.completed", { run_id: runId });
+        if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "succeeded");
       }
     } catch (error) {
+      if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
       this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
     } finally {
       if (state.activeRunId === runId) state.activeRunId = undefined;
@@ -88,7 +112,7 @@ export class ChatRegistry {
 
   private async getSession(chatId: string, state: ChatState): Promise<SessionLike> {
     if (state.session) return state.session;
-    state.session = await this.sessionFactory(chatId);
+    state.session = await this.sessionFactory(state.sessionId);
     state.unsubscribe = state.session.subscribe((event) => this.handlePiEvent(chatId, event));
     return state.session;
   }

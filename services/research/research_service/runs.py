@@ -28,6 +28,8 @@ class RunStore:
         run_id = str(uuid4())
         with self.database.transaction() as connection:
             self._require_chat(connection, chat_id)
+            if connection.execute("SELECT 1 FROM research_runs WHERE chat_id = ? AND status = 'running' LIMIT 1", [chat_id]).fetchone():
+                raise IllegalTransition("chat already has an active run")
             created_at = connection.execute(
                 "INSERT INTO research_runs (id, chat_id, pi_session_id, model) "
                 "VALUES (?, ?, ?, ?) RETURNING created_at",
@@ -35,13 +37,38 @@ class RunStore:
             ).fetchone()[0]
         return ResearchRun(run_id, chat_id, pi_session_id, model, created_at)
 
-    def create_chat(self, chat_id: str) -> None:
+    def get_chat(self, chat_id: str) -> dict[str, Any]:
+        with self.database.read() as connection:
+            row = connection.execute("SELECT id, pi_session_id FROM chats WHERE id = ?", [chat_id]).fetchone()
+        if row is None:
+            raise KeyError(chat_id)
+        return {"id": row[0], "pi_session_id": row[1]}
+
+    def list_chats(self) -> list[dict[str, Any]]:
+        with self.database.read() as connection:
+            rows = connection.execute("SELECT id, pi_session_id FROM chats ORDER BY created_at, id").fetchall()
+        return [{"id": row[0], "pi_session_id": row[1]} for row in rows]
+
+    def update_run(self, run_id: str, status: str, error: dict[str, Any] | None = None) -> None:
+        if status not in {"running", "succeeded", "failed", "cancelled"}:
+            raise ValueError("invalid run status")
         with self.database.transaction() as connection:
-            self.create_chat_in_transaction(connection, chat_id)
+            if connection.execute("SELECT 1 FROM research_runs WHERE id = ?", [run_id]).fetchone() is None:
+                raise KeyError(run_id)
+            connection.execute("UPDATE research_runs SET status = ?, error_json = ? WHERE id = ?", [status, json.dumps(error) if error else None, run_id])
+
+    def active_run(self, chat_id: str) -> str | None:
+        with self.database.read() as connection:
+            row = connection.execute("SELECT id FROM research_runs WHERE chat_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1", [chat_id]).fetchone()
+        return row[0] if row else None
+
+    def create_chat(self, chat_id: str, pi_session_id: str | None = None) -> None:
+        with self.database.transaction() as connection:
+            self.create_chat_in_transaction(connection, chat_id, pi_session_id)
 
     @staticmethod
-    def create_chat_in_transaction(connection: Any, chat_id: str) -> None:
-        connection.execute("INSERT INTO chats (id) VALUES (?) ON CONFLICT DO NOTHING", [chat_id])
+    def create_chat_in_transaction(connection: Any, chat_id: str, pi_session_id: str | None = None) -> None:
+        connection.execute("INSERT INTO chats (id, pi_session_id) VALUES (?, ?) ON CONFLICT DO NOTHING", [chat_id, pi_session_id])
 
     def update_pi_session(self, chat_id: str, pi_session_id: str) -> None:
         with self.database.transaction() as connection:
@@ -58,14 +85,18 @@ class RunStore:
             ).fetchall()
         return [ChatMessage(*row) for row in rows]
 
-    def append_message(self, chat_id: str, role: str, content: str) -> ChatMessage:
+    def append_message(self, chat_id: str, role: str, content: str, idempotency_key: str | None = None) -> ChatMessage:
         message_id = str(uuid4())
         with self.database.transaction() as connection:
             self._require_chat(connection, chat_id)
+            if idempotency_key:
+                existing = connection.execute("SELECT id, chat_id, role, content, created_at FROM chat_messages WHERE chat_id = ? AND idempotency_key = ?", [chat_id, idempotency_key]).fetchone()
+                if existing:
+                    return ChatMessage(*existing)
             created_at = connection.execute(
-                "INSERT INTO chat_messages (id, chat_id, role, content) VALUES (?, ?, ?, ?) "
+                "INSERT INTO chat_messages (id, chat_id, role, content, idempotency_key) VALUES (?, ?, ?, ?, ?) "
                 "RETURNING created_at",
-                [message_id, chat_id, role, content],
+                [message_id, chat_id, role, content, idempotency_key],
             ).fetchone()[0]
         return ChatMessage(message_id, chat_id, role, content, created_at)
 
