@@ -80,6 +80,7 @@ export class ResearchClient {
   async updateRun(run_id: string, status: ResearchRun["status"], error?: Record<string, unknown>): Promise<void> {
     await this.request("PATCH", `v1/research-runs/${encodeURIComponent(run_id)}`, { status, error });
   }
+  async getRun(run_id: string): Promise<ResearchRun> { return parseRun(await this.request("GET", `v1/research-runs/${encodeURIComponent(run_id)}`)); }
 
   async appendMessage(chat_id: string, request: { role: "user" | "assistant" | "tool"; content: string; idempotency_key?: string }): Promise<ChatMessage> {
     const value = await this.post(`v1/chats/${encodeURIComponent(chat_id)}/messages`, request); if (!isObject(value) || typeof value.id !== "string" || typeof value.chat_id !== "string" || !["user", "assistant", "tool"].includes(String(value.role)) || typeof value.content !== "string") throw new ResearchClientError("invalid message response", 200, value); return value as unknown as ChatMessage;

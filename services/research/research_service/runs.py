@@ -84,6 +84,13 @@ class RunStore:
             row = connection.execute("SELECT id FROM research_runs WHERE chat_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1", [chat_id]).fetchone()
         return row[0] if row else None
 
+    def get_run(self, run_id: str) -> ResearchRun:
+        with self.database.read() as connection:
+            row = connection.execute("SELECT id, chat_id, pi_session_id, model, created_at, status, error_json FROM research_runs WHERE id = ?", [run_id]).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        return ResearchRun(row[0], row[1], row[2], row[3], row[4], row[5], _json_object(row[6]))
+
     def create_chat(self, chat_id: str, pi_session_id: str | None = None) -> None:
         with self.database.transaction() as connection:
             self.create_chat_in_transaction(connection, chat_id, pi_session_id)

@@ -227,6 +227,16 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             raise HTTPException(status_code=404, detail="run not found") from exc
         return {"id": run_id, "status": payload.status}
 
+    @app.get("/v1/research-runs/{run_id}")
+    def get_run(run_id: str, request: Request) -> dict[str, Any]:
+        try:
+            run = store(request).get_run(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        return {"id": run.id, "chat_id": run.chat_id, "pi_session_id": run.pi_session_id,
+                "model": run.model, "created_at": run.created_at, "status": run.status,
+                "error": run.error, "replayed": run.replayed}
+
     @app.get("/v1/test/counts")
     def counts(request: Request) -> dict[str, int]:
         if not test_mode or os.getenv("IRA_TEST_MODE") != "1":

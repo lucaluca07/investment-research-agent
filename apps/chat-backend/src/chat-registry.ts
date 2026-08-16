@@ -63,7 +63,13 @@ export class ChatRegistry {
   async prompt(chatId: string, content: string, idempotencyKey: string): Promise<{ status: "accepted" | "replayed"; runId: string }> {
     const state = this.requireChat(chatId);
     const previous = state.idempotency.get(idempotencyKey);
-    if (previous) return { status: "replayed", runId: previous.runId };
+    if (previous) {
+      if (typeof this.researchClient.getRun !== "function") return { status: "replayed", runId: previous.runId };
+      const durable = await this.researchClient.getRun(previous.runId);
+      if (durable.status === "failed") { state.idempotency.delete(idempotencyKey); throw new Error("run failed and requires a new idempotency key"); }
+      if (durable.status === "running") throw new Error("chat already has an active run; retryable");
+      return { status: "replayed", runId: durable.id };
+    }
     if (state.activeRunId) throw new Error("chat already has an active run");
     let result: { status: "accepted" | "replayed"; runId: string };
     let resolve!: () => void;
