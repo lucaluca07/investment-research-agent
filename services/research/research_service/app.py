@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -50,18 +50,6 @@ class NoteRequest(RequestModel):
     title: str = Field(min_length=1)
     body: str = Field(min_length=1)
     citation_ids: list[str] = Field(min_length=1)
-
-
-class MessageRequest(RequestModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str = Field(min_length=1)
-
-    @field_validator("content")
-    @classmethod
-    def content_must_not_be_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("content must not be blank")
-        return value
 
 
 def create_app(database_path: str = ":memory:", test_mode: bool = False) -> FastAPI:
@@ -142,17 +130,6 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
              "content": message.content, "created_at": message.created_at}
             for message in messages
         ]}
-
-    @app.post("/v1/chats/{chat_id}/messages", status_code=status.HTTP_201_CREATED)
-    def append_message(chat_id: str, payload: MessageRequest, request: Request) -> dict[str, Any]:
-        try:
-            message = store(request).append_message(chat_id, payload.role, payload.content)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        return {
-            "id": message.id, "chat_id": message.chat_id, "role": message.role,
-            "content": message.content, "created_at": message.created_at,
-        }
 
     @app.post("/v1/research-runs", status_code=status.HTTP_201_CREATED)
     def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:

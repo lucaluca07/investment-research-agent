@@ -48,17 +48,6 @@ class RunStore:
             self._require_chat(connection, chat_id)
             connection.execute("UPDATE chats SET pi_session_id = ? WHERE id = ?", [pi_session_id, chat_id])
 
-    def append_message(self, chat_id: str, role: str, content: str) -> ChatMessage:
-        message_id = str(uuid4())
-        with self.database.transaction() as connection:
-            self._require_chat(connection, chat_id)
-            created_at = connection.execute(
-                "INSERT INTO chat_messages (id, chat_id, role, content) VALUES (?, ?, ?, ?) "
-                "RETURNING created_at",
-                [message_id, chat_id, role, content],
-            ).fetchone()[0]
-        return ChatMessage(message_id, chat_id, role, content, created_at)
-
     def list_messages(self, chat_id: str) -> list[ChatMessage]:
         with self.database.transaction() as connection:
             self._require_chat(connection, chat_id)

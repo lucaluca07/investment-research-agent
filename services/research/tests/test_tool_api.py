@@ -1,5 +1,6 @@
 import json
 from importlib.resources import files
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -188,14 +189,17 @@ def test_application_state_endpoints_do_not_expose_database_path(client):
     )
     assert updated.status_code == 200
     assert updated.json()["pi_session_id"] == "pi-state"
-    appended = client.post(
-        "/v1/chats/chat-state/messages",
-        json={"role": "user", "content": "Research PCB exposure"},
-    )
-    assert appended.status_code == 201
-    assert client.get("/v1/chats/chat-state/messages").json() == {
-        "messages": [appended.json()]
-    }
+    message_id = str(uuid4())
+    with client.app.state.database.transaction() as connection:
+        connection.execute(
+            "INSERT INTO chat_messages (id, chat_id, role, content) VALUES (?, ?, ?, ?)",
+            [message_id, "chat-state", "user", "Research PCB exposure"],
+        )
+    actual = client.get("/v1/chats/chat-state/messages").json()["messages"][0]
+    assert actual["id"] == message_id
+    assert actual["chat_id"] == "chat-state"
+    assert actual["role"] == "user"
+    assert actual["content"] == "Research PCB exposure"
 
 
 def test_unknown_pi_session_target_returns_404(client):
@@ -203,15 +207,6 @@ def test_unknown_pi_session_target_returns_404(client):
         "/v1/chats/missing/pi-session", json={"pi_session_id": "pi-state"}
     )
     assert response.status_code == 404
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [{"role": "system", "content": "x"}, {"role": "user", "content": ""}, {"role": "user", "content": "   "}],
-)
-def test_message_validates_role_and_content(client, payload):
-    client.post("/v1/chats", json={"chat_id": "validation-chat"})
-    assert client.post("/v1/chats/validation-chat/messages", json=payload).status_code == 422
 
 
 @pytest.mark.parametrize(
