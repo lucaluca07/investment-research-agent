@@ -64,6 +64,14 @@ export class ResearchClient {
     return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/messages`);
   }
 
+  async createChat(chat_id?: string): Promise<Record<string, unknown>> {
+    return this.post("v1/chats", chat_id ? { chat_id } : {});
+  }
+
+  async appendMessage(chat_id: string, request: { role: "user" | "assistant" | "tool"; content: string }): Promise<Record<string, unknown>> {
+    return this.post(`v1/chats/${encodeURIComponent(chat_id)}/messages`, request);
+  }
+
   private async post(path: string, body: unknown): Promise<Record<string, unknown>> {
     return this.request("POST", path, body);
   }

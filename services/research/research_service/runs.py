@@ -58,6 +58,17 @@ class RunStore:
             ).fetchall()
         return [ChatMessage(*row) for row in rows]
 
+    def append_message(self, chat_id: str, role: str, content: str) -> ChatMessage:
+        message_id = str(uuid4())
+        with self.database.transaction() as connection:
+            self._require_chat(connection, chat_id)
+            created_at = connection.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content) VALUES (?, ?, ?, ?) "
+                "RETURNING created_at",
+                [message_id, chat_id, role, content],
+            ).fetchone()[0]
+        return ChatMessage(message_id, chat_id, role, content, created_at)
+
     @staticmethod
     def _require_chat(connection: Any, chat_id: str) -> None:
         if connection.execute("SELECT 1 FROM chats WHERE id = ?", [chat_id]).fetchone() is None:

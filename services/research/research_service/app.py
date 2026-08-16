@@ -1,7 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
@@ -32,6 +32,11 @@ class ChatRequest(RequestModel):
 
 class PiSessionRequest(RequestModel):
     pi_session_id: str
+
+
+class MessageRequest(RequestModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str = Field(min_length=1)
 
 
 class RunRequest(RequestModel):
@@ -130,6 +135,17 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
              "content": message.content, "created_at": message.created_at}
             for message in messages
         ]}
+
+    @app.post("/v1/chats/{chat_id}/messages", status_code=status.HTTP_201_CREATED)
+    def append_message(chat_id: str, payload: MessageRequest, request: Request) -> dict[str, Any]:
+        try:
+            message = store(request).append_message(chat_id, payload.role, payload.content)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
+        return {
+            "id": message.id, "chat_id": message.chat_id, "role": message.role,
+            "content": message.content, "created_at": message.created_at,
+        }
 
     @app.post("/v1/research-runs", status_code=status.HTTP_201_CREATED)
     def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:
