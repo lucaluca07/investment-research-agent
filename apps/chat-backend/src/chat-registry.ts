@@ -82,7 +82,7 @@ export class ChatRegistry {
       const generation = state.generation;
       state.activeRunId = runId;
       state.idempotency.set(idempotencyKey, { runId });
-      await this.emit(chatId, "run.started", { run_id: runId });
+      await this.enqueueEmit(chatId, "run.started", { run_id: runId });
       state.assistantText.set(runId, "");
       void this.runPrompt(chatId, state, session, content, runId, generation);
       result = { status: "accepted", runId };
@@ -100,9 +100,9 @@ export class ChatRegistry {
     try { await state.session?.abort?.(); }
     catch { /* cancellation is persisted below even if pi abort rejects */ }
     finally {
-      if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled");
+      try { if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled"); } catch { /* best effort state update */ }
       state.activeRunId = undefined;
-      await this.emit(chatId, "run.cancelled", { run_id: runId });
+      try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch { /* best effort event */ }
     }
     return { runId };
   }
@@ -113,13 +113,13 @@ export class ChatRegistry {
       if (state.activeRunId === runId && state.generation === generation) {
         const content = state.assistantText.get(runId) ?? "";
         if (content) await this.researchClient.appendMessage(chatId, { role: "assistant", content });
-        await this.emit(chatId, "message.completed", { run_id: runId, content });
-        await this.emit(chatId, "run.completed", { run_id: runId });
+        await this.enqueueEmit(chatId, "message.completed", { run_id: runId, content });
+        await this.enqueueEmit(chatId, "run.completed", { run_id: runId });
         if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "succeeded");
       }
     } catch (error) {
       if (state.generation === generation && typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
-      if (state.generation === generation) await this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
+      if (state.generation === generation) await this.enqueueEmit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
     } finally {
       if (state.activeRunId === runId) state.activeRunId = undefined;
     }
@@ -156,9 +156,10 @@ export class ChatRegistry {
     for (const subscriber of state.subscribers) subscriber(event);
   }
 
-  private enqueueEmit(chatId: string, type: string, data: Record<string, unknown>): void {
+  private enqueueEmit(chatId: string, type: string, data: Record<string, unknown>): Promise<void> {
     const state = this.requireChat(chatId);
     state.eventQueue = state.eventQueue.then(() => this.emit(chatId, type, data));
+    return state.eventQueue;
   }
 
   private requireChat(chatId: string): ChatState {

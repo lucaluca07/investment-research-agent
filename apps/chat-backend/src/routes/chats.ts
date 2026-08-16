@@ -11,7 +11,7 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     const result = await client.createChat(body.chat_id);
     const chatId = String(result.id ?? body.chat_id ?? randomUUID());
     registry.addChat(chatId, result.pi_session_id);
-    return reply.code(201).send({ id: chatId });
+    return reply.code(201).send(result);
   });
 
   app.get("/v1/chats/:chatId/messages", async (request, reply) => {
