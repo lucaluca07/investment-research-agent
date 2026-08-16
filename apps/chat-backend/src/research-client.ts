@@ -23,13 +23,25 @@ export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
 };
 
+export class ResearchClientError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: unknown,
+  ) {
+    super(message);
+    this.name = "ResearchClientError";
+  }
+}
+
 export class ResearchClient {
   private readonly baseUrl: URL;
   private readonly requestFetch: typeof globalThis.fetch;
 
   constructor(baseUrl: string, options: ResearchClientOptions = {}) {
     const parsed = new URL(baseUrl);
-    if (!["localhost", "127.0.0.1", "::1"].includes(parsed.hostname)) {
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
+    if (!["localhost", "127.0.0.1", "::1"].includes(hostname)) {
       throw new Error("Research service base URL must be loopback");
     }
     this.baseUrl = new URL(parsed.toString().endsWith("/") ? parsed : `${parsed}/`);
@@ -48,27 +60,32 @@ export class ResearchClient {
     return this.post("v1/tools/save-research-note", request);
   }
 
-  async createChat(chat_id: string): Promise<Record<string, unknown>> {
-    return this.post("v1/chats", { chat_id });
-  }
-
-  async updatePiSession(chat_id: string, pi_session_id: string): Promise<Record<string, unknown>> {
-    return this.request("PATCH", `v1/chats/${encodeURIComponent(chat_id)}/pi-session`, { pi_session_id });
+  async getChatHistory(chat_id: string): Promise<Record<string, unknown>> {
+    return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/messages`);
   }
 
   private async post(path: string, body: unknown): Promise<Record<string, unknown>> {
     return this.request("POST", path, body);
   }
 
-  private async request(method: string, path: string, body: unknown): Promise<Record<string, unknown>> {
+  private async request(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
     const response = await this.requestFetch(new URL(path, this.baseUrl), {
       method,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    const payload = await response.json().catch(() => ({}));
+    const text = await response.text();
+    let payload: unknown = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = text;
+    }
     if (!response.ok) {
-      throw new Error(`Research service request failed: ${response.status}`);
+      const message = typeof payload === "object" && payload !== null && "detail" in payload
+        ? String((payload as { detail: unknown }).detail)
+        : typeof payload === "string" ? payload : "request failed";
+      throw new ResearchClientError(`Research service request failed: ${message}`, response.status, payload);
     }
     return payload as Record<string, unknown>;
   }

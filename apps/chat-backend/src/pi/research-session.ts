@@ -3,7 +3,7 @@ import path from "node:path";
 
 import {
   createAgentSession,
-  createExtensionRuntime,
+  DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
@@ -37,19 +37,18 @@ export async function createResearchSession(options: ResearchSessionOptions = {}
   const client = options.client ?? new ResearchClient(process.env.IRA_RESEARCH_SERVICE_URL ?? "http://127.0.0.1:8000");
   const modelRuntime = options.modelRuntime ?? await createModelRuntime(agentDir);
   const model = options.model ?? selectModel(modelRuntime);
-  const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => RESEARCH_LEAD_PROMPT,
-    getSystemPromptSource: () => undefined,
-    getAppendSystemPrompt: () => [],
-    getAppendSystemPromptSources: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
+  const resourceLoader: ResourceLoader = new DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager: SettingsManager.inMemory(),
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: RESEARCH_LEAD_PROMPT,
+  });
+  await resourceLoader.reload({ resolveProjectTrust: async () => true });
   const sessionFactory = options.createAgentSession ?? (createAgentSession as unknown as SessionFactory);
   return sessionFactory({
     cwd,

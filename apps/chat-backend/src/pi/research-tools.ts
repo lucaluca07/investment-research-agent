@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type AgentToolResult, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import type { ResearchClient } from "../research-client.js";
 
@@ -21,7 +21,7 @@ export function createResearchTools(client: ResearchClient): [
   ToolDefinition<typeof saveParameters>,
 ] {
   return [
-    {
+    defineTool({
       name: "query_company_snapshot",
       label: "Query company snapshot",
       description: "Query the dated Victory Giant Technology company snapshot.",
@@ -29,8 +29,8 @@ export function createResearchTools(client: ResearchClient): [
       async execute(_id, params: Static<typeof queryParameters>) {
         return result(await client.queryCompanySnapshot(params.ticker));
       },
-    },
-    {
+    }),
+    defineTool({
       name: "save_research_note",
       label: "Save research note",
       description: "Save an evidence-backed research note with stable idempotency.",
@@ -38,6 +38,6 @@ export function createResearchTools(client: ResearchClient): [
       async execute(_id, params: Static<typeof saveParameters>) {
         return result(await client.saveResearchNote(params));
       },
-    },
+    }),
   ];
 }

@@ -1,12 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ResearchClient } from "./research-client.js";
+import { ResearchClient, ResearchClientError } from "./research-client.js";
+import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { createResearchTools } from "./pi/research-tools.js";
 import { createResearchSession } from "./pi/research-session.js";
 
 describe("research-only pi session", () => {
   it("rejects non-loopback research service URLs", () => {
     expect(() => new ResearchClient("https://example.com")).toThrow(/loopback/);
+  });
+
+  it("accepts IPv6 loopback and preserves getChatHistory and error bodies", async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ messages: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "citation conflict" }), { status: 409 }));
+    const client = new ResearchClient("http://[::1]:8000", { fetch });
+    await expect(client.getChatHistory("chat-1")).resolves.toEqual({ messages: [] });
+    await expect(client.saveResearchNote({
+      run_id: "run-1", idempotency_key: "key", title: "T", body: "B", citation_ids: ["c"],
+    })).rejects.toMatchObject({ status: 409, body: { detail: "citation conflict" } } satisfies Partial<ResearchClientError>);
   });
 
   it("defines exactly the two constrained research tools", () => {
@@ -16,6 +28,7 @@ describe("research-only pi session", () => {
       "save_research_note",
     ]);
     expect(tools[0].parameters.properties.ticker.const).toBe("300476.SZ");
+    expect(tools.every((tool) => tool.name)).toBe(true);
     expect(tools[1].parameters.properties.run_id).toBeDefined();
     expect(tools[1].parameters.properties.idempotency_key).toBeDefined();
   });
@@ -56,6 +69,7 @@ describe("research-only pi session", () => {
     expect(options.tools).toBeUndefined();
     expect(options.customTools).toHaveLength(2);
     expect(options.settingsManager).toBeDefined();
+    expect(options.resourceLoader).toBeInstanceOf(DefaultResourceLoader);
     expect(options.resourceLoader.getExtensions().extensions).toEqual([]);
     expect(options.resourceLoader.getSkills().skills).toEqual([]);
     expect(options.resourceLoader.getPrompts().prompts).toEqual([]);
