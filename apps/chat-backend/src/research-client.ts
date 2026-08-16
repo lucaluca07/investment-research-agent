@@ -73,8 +73,8 @@ export class ResearchClient {
     return parseChat(await this.post("v1/chats", chat_id ? { chat_id } : {}));
   }
 
-  async listChats(): Promise<Chat[]> { return this.request("GET", "v1/chats") as unknown as Promise<Chat[]>; }
-  async getChat(chat_id: string): Promise<Chat> { return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}`) as Promise<Chat>; }
+  async listChats(): Promise<Chat[]> { const value = await this.request("GET", "v1/chats"); if (!Array.isArray(value)) throw new ResearchClientError("invalid chats response", 200, value); return value.map(parseChat); }
+  async getChat(chat_id: string): Promise<Chat> { return parseChat(await this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}`)); }
   async listEvents(chat_id: string, afterId = 0): Promise<PersistedChatEvent[]> { const value = await this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/events?after=${afterId}`); if (!Array.isArray(value)) throw new ResearchClientError("invalid events response", 200, value); return value.map(parseEvent); }
   async appendEvent(chat_id: string, event: { type: string; data: Record<string, unknown> }): Promise<PersistedChatEvent> { return parseEvent(await this.post(`v1/chats/${encodeURIComponent(chat_id)}/events`, event)); }
   async updateRun(run_id: string, status: ResearchRun["status"], error?: Record<string, unknown>): Promise<void> {
@@ -82,7 +82,7 @@ export class ResearchClient {
   }
 
   async appendMessage(chat_id: string, request: { role: "user" | "assistant" | "tool"; content: string; idempotency_key?: string }): Promise<ChatMessage> {
-    return this.post(`v1/chats/${encodeURIComponent(chat_id)}/messages`, request) as Promise<ChatMessage>;
+    const value = await this.post(`v1/chats/${encodeURIComponent(chat_id)}/messages`, request); if (!isObject(value) || typeof value.id !== "string" || typeof value.chat_id !== "string" || !["user", "assistant", "tool"].includes(String(value.role)) || typeof value.content !== "string") throw new ResearchClientError("invalid message response", 200, value); return value as unknown as ChatMessage;
   }
 
   private async post(path: string, body: unknown): Promise<unknown> {

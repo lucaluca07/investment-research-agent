@@ -76,6 +76,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         database = Database(database_path)
         run_store = RunStore(database)
         seed_fixture_citations(run_store)
+        run_store.recover_incomplete_runs()
         app.state.database = database
         app.state.run_store = run_store
         try:

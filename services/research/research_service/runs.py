@@ -52,6 +52,10 @@ class RunStore:
             rows = connection.execute("SELECT id, pi_session_id FROM chats ORDER BY created_at, id").fetchall()
         return [{"id": row[0], "pi_session_id": row[1]} for row in rows]
 
+    def recover_incomplete_runs(self) -> None:
+        with self.database.transaction() as connection:
+            connection.execute("UPDATE research_runs SET status = 'failed', error_json = ? WHERE status = 'running'", [json.dumps({"retryable": True, "reason": "service restarted"})])
+
     def append_event(self, chat_id: str, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
         with self.database.transaction() as connection:
             self._require_chat(connection, chat_id)

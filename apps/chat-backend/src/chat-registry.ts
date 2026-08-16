@@ -21,6 +21,7 @@ type ChatState = {
   assistantText: Map<string, string>;
   queue: Promise<void>;
   generation: number;
+  eventQueue: Promise<void>;
 };
 
 export class ChatRegistry {
@@ -32,16 +33,15 @@ export class ChatRegistry {
       createResearchSession({ sessionId: chatId, client: researchClient }) as Promise<SessionLike>,
   ) {}
 
-  addChat(chatId: string): void {
+  addChat(chatId: string, sessionId = chatId): void {
     if (!this.chats.has(chatId)) {
-      this.chats.set(chatId, { sessionId: chatId, nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map(), queue: Promise.resolve(), generation: 0 });
+      this.chats.set(chatId, { sessionId, nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map(), queue: Promise.resolve(), generation: 0, eventQueue: Promise.resolve() });
     }
   }
 
   async restore(): Promise<void> {
     for (const chat of await this.researchClient.listChats()) {
-      this.addChat(chat.id);
-      this.chats.get(chat.id)!.sessionId = chat.pi_session_id;
+      this.addChat(chat.id, chat.pi_session_id);
     }
   }
 
@@ -97,10 +97,13 @@ export class ChatRegistry {
     const runId = state.activeRunId;
     if (!runId) throw new Error("chat has no active run");
     state.generation += 1;
-    await state.session?.abort?.();
-    if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled");
-    state.activeRunId = undefined;
-    await this.emit(chatId, "run.cancelled", { run_id: runId });
+    try { await state.session?.abort?.(); }
+    catch { /* cancellation is persisted below even if pi abort rejects */ }
+    finally {
+      if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled");
+      state.activeRunId = undefined;
+      await this.emit(chatId, "run.cancelled", { run_id: runId });
+    }
     return { runId };
   }
 
@@ -116,7 +119,7 @@ export class ChatRegistry {
       }
     } catch (error) {
       if (state.generation === generation && typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
-      await this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
+      if (state.generation === generation) await this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
     } finally {
       if (state.activeRunId === runId) state.activeRunId = undefined;
     }
@@ -135,11 +138,11 @@ export class ChatRegistry {
       const delta = value.assistantMessageEvent.delta ?? "";
       const state = this.requireChat(chatId);
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);
-      this.emit(chatId, "message.delta", { delta });
+      this.enqueueEmit(chatId, "message.delta", { delta });
     } else if (value.type === "tool_execution_start") {
-      this.emit(chatId, "tool.started", { tool_name: value.toolName ?? "research_tool" });
+      this.enqueueEmit(chatId, "tool.started", { tool_name: value.toolName ?? "research_tool" });
     } else if (value.type === "tool_execution_end") {
-      this.emit(chatId, "tool.completed", { tool_name: value.toolName ?? "research_tool" });
+      this.enqueueEmit(chatId, "tool.completed", { tool_name: value.toolName ?? "research_tool" });
     }
   }
 
@@ -151,6 +154,11 @@ export class ChatRegistry {
     state.events.push(event);
     if (state.events.length > 1000) state.events.shift();
     for (const subscriber of state.subscribers) subscriber(event);
+  }
+
+  private enqueueEmit(chatId: string, type: string, data: Record<string, unknown>): void {
+    const state = this.requireChat(chatId);
+    state.eventQueue = state.eventQueue.then(() => this.emit(chatId, type, data));
   }
 
   private requireChat(chatId: string): ChatState {

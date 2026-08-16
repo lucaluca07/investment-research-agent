@@ -10,7 +10,7 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     const body = (request.body ?? {}) as { chat_id?: string };
     const result = await client.createChat(body.chat_id);
     const chatId = String(result.id ?? body.chat_id ?? randomUUID());
-    registry.addChat(chatId);
+    registry.addChat(chatId, result.pi_session_id);
     return reply.code(201).send({ id: chatId });
   });
 
@@ -48,9 +48,10 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     const last = Number(request.headers["last-event-id"] ?? (request.query as { lastEventId?: string }).lastEventId);
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    const write = (event: { id: number; type: string; data: Record<string, unknown> }) => reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
-    for (const event of await client.listEvents(chatId, Number.isFinite(last) ? last : 0)) write(event);
+    const seen = new Set<number>();
+    const write = (event: { id: number; type: string; data: Record<string, unknown> }) => { if (seen.has(event.id)) return; seen.add(event.id); reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`); };
     const unsubscribe = registry.subscribe(chatId, write);
+    for (const event of await client.listEvents(chatId, Number.isFinite(last) ? last : 0)) write(event);
     const heartbeat = setInterval(() => reply.raw.write(": heartbeat\n\n"), 15000);
     request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
   });
