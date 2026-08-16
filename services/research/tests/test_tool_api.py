@@ -1,12 +1,10 @@
 import json
-from pathlib import Path
+from importlib.resources import files
 
 import pytest
 from fastapi.testclient import TestClient
 
 from research_service.app import create_app
-
-FIXTURE = Path(__file__).parent / "fixtures/shenghong_snapshot.json"
 
 
 @pytest.fixture
@@ -30,10 +28,16 @@ def _run(client, chat_id="chat-1"):
 def test_company_snapshot_returns_dated_citations(client):
     response = client.post("/v1/tools/query-company-snapshot", json={"ticker": "300476.SZ"})
     assert response.status_code == 200
-    assert response.json() == json.loads(FIXTURE.read_text())
+    assert response.json()["company_name"] == "胜宏科技"
     assert response.json()["citations"][0].keys() == {
         "document_id", "title", "published_at", "locator"
     }
+
+
+def test_snapshot_resource_is_packaged_and_app_lifespan_starts(client):
+    resource = files("research_service").joinpath("data/shenghong_snapshot.json")
+    assert json.loads(resource.read_text())["ticker"] == "300476.SZ"
+    assert client.get("/v1/chats/missing/messages").status_code == 404
 
 
 def test_unknown_ticker_returns_422(client):

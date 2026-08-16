@@ -1,17 +1,16 @@
 import hashlib
 import json
-from pathlib import Path
+from importlib.resources import files
 from typing import Any
 
 from .runs import RunStore
-
-SNAPSHOT_PATH = Path(__file__).parents[1] / "tests" / "fixtures" / "shenghong_snapshot.json"
 
 
 def company_snapshot(ticker: str) -> dict[str, Any]:
     if ticker != "300476.SZ":
         raise ValueError("unsupported ticker")
-    return json.loads(SNAPSHOT_PATH.read_text())
+    resource = files("research_service").joinpath("data/shenghong_snapshot.json")
+    return json.loads(resource.read_text())
 
 
 def input_hash(title: str, body: str, citation_ids: list[str]) -> str:
