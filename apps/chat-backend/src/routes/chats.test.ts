@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../app.js";
+import { ResearchClientError } from "../research-client.js";
 
 describe("chat routes", () => {
   it("lists persisted chats", async () => {
@@ -8,6 +9,13 @@ describe("chat routes", () => {
     const response = await app.inject({ method: "GET", url: "/v1/chats" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual([{ id: "chat-1", pi_session_id: "pi-1" }]);
+    await app.close();
+  });
+
+  it("maps chat list upstream errors", async () => {
+    const app = await createApp({ researchClient: { listChats: vi.fn().mockRejectedValue(new ResearchClientError("upstream unavailable", 503, { detail: "down" })) } as never, sessionFactory: vi.fn() });
+    const response = await app.inject({ method: "GET", url: "/v1/chats" });
+    expect(response.statusCode).toBe(503);
     await app.close();
   });
   it("returns 404 for an unknown chat", async () => {
