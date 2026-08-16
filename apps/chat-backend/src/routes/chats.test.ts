@@ -3,6 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 
 describe("chat routes", () => {
+  it("lists persisted chats", async () => {
+    const app = await createApp({ researchClient: { listChats: vi.fn().mockResolvedValue([{ id: "chat-1", pi_session_id: "pi-1" }]) } as never, sessionFactory: vi.fn() });
+    const response = await app.inject({ method: "GET", url: "/v1/chats" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([{ id: "chat-1", pi_session_id: "pi-1" }]);
+    await app.close();
+  });
   it("returns 404 for an unknown chat", async () => {
     const app = await createApp({
       researchClient: {} as never,
