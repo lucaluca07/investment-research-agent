@@ -163,6 +163,37 @@ def test_file_database_persists_runs(tmp_path):
         reopened.close()
 
 
+def test_restart_recovers_chat_messages_events_and_running_run(tmp_path):
+    path = str(tmp_path / "restart.duckdb")
+    database = Database(path)
+    store = RunStore(database)
+    store.create_chat("restart-chat", "pi-stable")
+    run = store.create_run("restart-chat", "pi-stable", "test/model", "restart-key")
+    message = store.append_message("restart-chat", "user", "recover me", "message-key")
+    store.append_event("restart-chat", "message.delta", {"run_id": run.id, "delta": "recover"})
+    step = store.start_step(run.id, "approval", "approval-key", "hash")
+    store.request_approval(step.id, {"action": "review"})
+    with database.transaction() as connection:
+        connection.execute("INSERT INTO citations (id, document_id, title) VALUES ('citation-restart', 'doc-restart', 'Restart source')")
+    database.close()
+    reopened = Database(path)
+    try:
+        recovered = RunStore(reopened)
+        assert recovered.get_chat("restart-chat")["pi_session_id"] == "pi-stable"
+        assert recovered.get_run(run.id).status == "running"
+        assert recovered.list_messages("restart-chat")[0].id == message.id
+        assert recovered.list_events("restart-chat")[0]["type"] == "message.delta"
+        assert recovered.get_approval(step.id).status == "pending"
+        assert reopened.connection.execute("SELECT document_id FROM citations WHERE id = 'citation-restart'").fetchone() == ("doc-restart",)
+        recovered.recover_incomplete_runs()
+        assert recovered.get_run(run.id).status == "failed"
+        replay = recovered.create_run("restart-chat", "pi-stable", "test/model", "restart-key")
+        assert replay.id == run.id
+        assert replay.replayed is True
+    finally:
+        reopened.close()
+
+
 def test_foreign_keys_reject_orphan_ids(store):
     with pytest.raises(Exception, match="foreign key|violates"), store.database.transaction() as connection:
         connection.execute(

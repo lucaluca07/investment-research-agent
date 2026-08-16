@@ -7,7 +7,10 @@
   "packageManager": "pnpm@11.5.1",
   "scripts": {
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "dev:v1a": "bash scripts/dev-v1a.sh",
+    "test:e2e": "vitest run tests/e2e/v1a-chat.test.ts",
+    "verify": "pnpm test && pnpm typecheck && pnpm --filter @ira/web build && pnpm test:e2e"
   },
   "devDependencies": {
     "typescript": "^5.9.2",
