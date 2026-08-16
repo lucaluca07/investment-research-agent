@@ -37,3 +37,12 @@ class ApprovalRequest:
     payload: dict[str, Any]
     actor: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    id: str
+    chat_id: str
+    role: str
+    content: str
+    created_at: datetime | None = None

@@ -3,7 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from .db import Database
-from .models import ApprovalRequest, ResearchRun, ResearchRunStep, StepStatus
+from .models import ApprovalRequest, ChatMessage, ResearchRun, ResearchRunStep, StepStatus
 
 RUNNING: StepStatus = "running"
 WAITING_APPROVAL: StepStatus = "waiting_approval"
@@ -44,6 +44,32 @@ class RunStore:
             self.create_chat_in_transaction(connection, chat_id)
             connection.execute("UPDATE chats SET pi_session_id = ? WHERE id = ?", [pi_session_id, chat_id])
 
+    def append_message(self, chat_id: str, role: str, content: str) -> ChatMessage:
+        message_id = str(uuid4())
+        with self.database.transaction() as connection:
+            self._require_chat(connection, chat_id)
+            created_at = connection.execute(
+                "INSERT INTO chat_messages (id, chat_id, role, content) VALUES (?, ?, ?, ?) "
+                "RETURNING created_at",
+                [message_id, chat_id, role, content],
+            ).fetchone()[0]
+        return ChatMessage(message_id, chat_id, role, content, created_at)
+
+    def list_messages(self, chat_id: str) -> list[ChatMessage]:
+        with self.database.transaction() as connection:
+            self._require_chat(connection, chat_id)
+            rows = connection.execute(
+                "SELECT id, chat_id, role, content, created_at FROM chat_messages "
+                "WHERE chat_id = ? ORDER BY created_at, id",
+                [chat_id],
+            ).fetchall()
+        return [ChatMessage(*row) for row in rows]
+
+    @staticmethod
+    def _require_chat(connection: Any, chat_id: str) -> None:
+        if connection.execute("SELECT 1 FROM chats WHERE id = ?", [chat_id]).fetchone() is None:
+            raise KeyError(chat_id)
+
     def save_research_note(
         self,
         run_id: str,
@@ -52,6 +78,7 @@ class RunStore:
         title: str,
         body: str,
         citation_ids: list[str],
+        fault_after_note: bool = False,
     ) -> dict[str, Any]:
         with self.database.transaction() as connection:
             existing = connection.execute(
@@ -78,6 +105,8 @@ class RunStore:
                 "INSERT INTO research_notes (id, run_id, title, body) VALUES (?, ?, ?, ?)",
                 [note_id, run_id, title, body],
             )
+            if fault_after_note:
+                raise RuntimeError("test fault after note insertion")
             for citation_id in citation_ids:
                 connection.execute(
                     "UPDATE citations SET note_id = ? WHERE id = ?", [note_id, citation_id]

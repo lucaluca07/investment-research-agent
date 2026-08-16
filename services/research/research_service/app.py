@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from .db import Database
@@ -37,6 +37,11 @@ class NoteRequest(BaseModel):
     citation_ids: list[str]
 
 
+class MessageRequest(BaseModel):
+    role: str
+    content: str
+
+
 def create_app(database_path: str = ":memory:") -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -63,7 +68,11 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/v1/tools/save-research-note")
-    def save_note(payload: NoteRequest, request: Request) -> dict[str, Any]:
+    def save_note(
+        payload: NoteRequest,
+        request: Request,
+        x_ira_test_fail_after_note: str | None = Header(default=None),
+    ) -> dict[str, Any]:
         run_store = store(request)
         if not citation_ids_exist(run_store, payload.citation_ids):
             raise HTTPException(status_code=422, detail="invalid citation id")
@@ -75,11 +84,17 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
                 payload.title,
                 payload.body,
                 payload.citation_ids,
+                fault_after_note=(
+                    os.getenv("IRA_TEST_MODE") == "1"
+                    and x_ira_test_fail_after_note == "1"
+                ),
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (KeyError, IllegalTransition) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.post("/v1/chats", status_code=status.HTTP_201_CREATED)
     def create_chat(payload: ChatRequest, request: Request) -> dict[str, str]:
@@ -89,12 +104,26 @@ def create_app(database_path: str = ":memory:") -> FastAPI:
 
     @app.get("/v1/chats/{chat_id}/messages")
     def messages(chat_id: str, request: Request) -> dict[str, list[Any]]:
-        exists = store(request).database.connection.execute(
-            "SELECT 1 FROM chats WHERE id = ?", [chat_id]
-        ).fetchone()
-        if exists is None:
-            raise HTTPException(status_code=404, detail="chat not found")
-        return {"messages": []}
+        try:
+            messages = store(request).list_messages(chat_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
+        return {"messages": [
+            {"id": message.id, "chat_id": message.chat_id, "role": message.role,
+             "content": message.content, "created_at": message.created_at}
+            for message in messages
+        ]}
+
+    @app.post("/v1/chats/{chat_id}/messages", status_code=status.HTTP_201_CREATED)
+    def append_message(chat_id: str, payload: MessageRequest, request: Request) -> dict[str, Any]:
+        try:
+            message = store(request).append_message(chat_id, payload.role, payload.content)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
+        return {
+            "id": message.id, "chat_id": message.chat_id, "role": message.role,
+            "content": message.content, "created_at": message.created_at,
+        }
 
     @app.post("/v1/research-runs", status_code=status.HTTP_201_CREATED)
     def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:

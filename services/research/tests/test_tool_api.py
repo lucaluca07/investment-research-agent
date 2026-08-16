@@ -70,6 +70,30 @@ def test_save_note_input_mismatch_returns_conflict(client):
     assert client.post("/v1/tools/save-research-note", json=request).status_code == 409
 
 
+def test_save_note_fault_rolls_back_and_retry_replays_original_result(client, monkeypatch):
+    monkeypatch.setenv("IRA_TEST_MODE", "1")
+    run_id = _run(client)
+    request = {
+        "run_id": run_id,
+        "idempotency_key": "fault-key",
+        "title": "Atomic note",
+        "body": "Retry me",
+        "citation_ids": ["fixture:300476:2026-08-14"],
+    }
+    failed = client.post(
+        "/v1/tools/save-research-note",
+        json=request,
+        headers={"X-IRA-Test-Fail-After-Note": "1"},
+    )
+    assert failed.status_code == 500
+    retried = client.post("/v1/tools/save-research-note", json=request)
+    assert retried.status_code == 200
+    counts = client.get("/v1/test/counts").json()
+    assert counts["research_notes"] == 1
+    assert counts["research_run_steps"] == 1
+    assert retried.json()["citation_ids"] == request["citation_ids"]
+
+
 def test_save_note_rejects_invalid_citation(client):
     run_id = _run(client)
     response = client.post(
@@ -94,7 +118,18 @@ def test_application_state_endpoints_do_not_expose_database_path(client):
     )
     assert updated.status_code == 200
     assert updated.json()["pi_session_id"] == "pi-state"
-    assert client.get("/v1/chats/chat-state/messages").json() == {"messages": []}
+    appended = client.post(
+        "/v1/chats/chat-state/messages",
+        json={"role": "user", "content": "Research PCB exposure"},
+    )
+    assert appended.status_code == 201
+    assert client.get("/v1/chats/chat-state/messages").json() == {
+        "messages": [appended.json()]
+    }
+
+
+def test_unknown_chat_messages_returns_404(client):
+    assert client.get("/v1/chats/missing/messages").status_code == 404
 
 
 def test_count_endpoint_requires_test_mode(client, monkeypatch):
