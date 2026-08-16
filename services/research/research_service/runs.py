@@ -3,7 +3,13 @@ from typing import Any
 from uuid import uuid4
 
 from .db import Database
-from .models import ResearchRun, ResearchRunStep
+from .models import ApprovalRequest, ResearchRun, ResearchRunStep, StepStatus
+
+RUNNING: StepStatus = "running"
+WAITING_APPROVAL: StepStatus = "waiting_approval"
+SUCCEEDED: StepStatus = "succeeded"
+FAILED: StepStatus = "failed"
+CANCELLED: StepStatus = "cancelled"
 
 
 class IllegalTransition(RuntimeError):
@@ -18,11 +24,12 @@ class RunStore:
         run_id = str(uuid4())
         with self.database.transaction() as connection:
             connection.execute("INSERT INTO chats (id) VALUES (?) ON CONFLICT DO NOTHING", [chat_id])
-            connection.execute(
-                "INSERT INTO research_runs (id, chat_id, pi_session_id, model) VALUES (?, ?, ?, ?)",
+            created_at = connection.execute(
+                "INSERT INTO research_runs (id, chat_id, pi_session_id, model) "
+                "VALUES (?, ?, ?, ?) RETURNING created_at",
                 [run_id, chat_id, pi_session_id, model],
-            )
-        return ResearchRun(run_id, chat_id, pi_session_id, model)
+            ).fetchone()[0]
+        return ResearchRun(run_id, chat_id, pi_session_id, model, created_at)
 
     def start_step(
         self, run_id: str, step_name: str, idempotency_key: str, input_hash: str
@@ -36,7 +43,7 @@ class RunStore:
             if existing:
                 if existing[3] != input_hash:
                     raise ValueError("input hash differs for idempotency key")
-                if existing[2] == "succeeded":
+                if existing[2] == SUCCEEDED:
                     return self._step_from_row(run_id, idempotency_key, existing)
                 raise IllegalTransition(f"step is already {existing[2]}")
 
@@ -61,7 +68,7 @@ class RunStore:
 
     def request_approval(self, step_id: str, payload: dict[str, Any]) -> None:
         with self.database.transaction() as connection:
-            self._require_status(connection, step_id, {"running"})
+            self._require_status(connection, step_id, {RUNNING})
             connection.execute(
                 "UPDATE research_run_steps SET status = 'waiting_approval' WHERE id = ?", [step_id]
             )
@@ -76,9 +83,19 @@ class RunStore:
     def reject(self, step_id: str, actor: str, reason: str) -> None:
         self._resolve_approval(step_id, "rejected", actor, reason, "cancelled")
 
+    def get_approval(self, step_id: str) -> ApprovalRequest:
+        row = self.database.connection.execute(
+            "SELECT id, step_id, status, payload_json, actor, reason "
+            "FROM approval_requests WHERE step_id = ? ORDER BY created_at DESC LIMIT 1",
+            [step_id],
+        ).fetchone()
+        if row is None:
+            raise KeyError(step_id)
+        return ApprovalRequest(row[0], row[1], row[2], _json_object(row[3]) or {}, row[4], row[5])
+
     def succeed(self, step_id: str, result: dict[str, Any]) -> None:
         with self.database.transaction() as connection:
-            self._require_status(connection, step_id, {"running"})
+            self._require_status(connection, step_id, {RUNNING})
             connection.execute(
                 "UPDATE research_run_steps SET status = 'succeeded', result_json = ?, "
                 "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -87,7 +104,7 @@ class RunStore:
 
     def fail(self, step_id: str, error: dict[str, Any], retryable: bool) -> None:
         with self.database.transaction() as connection:
-            self._require_status(connection, step_id, {"running"})
+            self._require_status(connection, step_id, {RUNNING})
             connection.execute(
                 "UPDATE research_run_steps SET status = 'failed', error_json = ?, retryable = ?, "
                 "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -96,7 +113,7 @@ class RunStore:
 
     def retry(self, step_id: str) -> None:
         with self.database.transaction() as connection:
-            row = self._require_status(connection, step_id, {"failed"})
+            row = self._require_status(connection, step_id, {FAILED})
             if not row[1]:
                 raise IllegalTransition("failed step is not retryable")
             connection.execute(
@@ -120,7 +137,7 @@ class RunStore:
         self, step_id: str, approval_status: str, actor: str, reason: str | None, step_status: str
     ) -> None:
         with self.database.transaction() as connection:
-            self._require_status(connection, step_id, {"waiting_approval"})
+            self._require_status(connection, step_id, {WAITING_APPROVAL})
             connection.execute(
                 "UPDATE approval_requests SET status = ?, actor = ?, reason = ?, "
                 "resolved_at = CURRENT_TIMESTAMP WHERE step_id = ? AND status = 'pending'",

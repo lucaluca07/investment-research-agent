@@ -1,17 +1,18 @@
-CREATE TABLE chats (
+CREATE TABLE IF NOT EXISTS chats (
   id VARCHAR PRIMARY KEY,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE research_runs (
+CREATE TABLE IF NOT EXISTS research_runs (
   id VARCHAR PRIMARY KEY,
   chat_id VARCHAR NOT NULL,
   pi_session_id VARCHAR NOT NULL,
   model VARCHAR NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (chat_id) REFERENCES chats(id)
 );
 
-CREATE TABLE research_run_steps (
+CREATE TABLE IF NOT EXISTS research_run_steps (
   id VARCHAR PRIMARY KEY,
   run_id VARCHAR NOT NULL,
   step_name VARCHAR NOT NULL,
@@ -25,10 +26,11 @@ CREATE TABLE research_run_steps (
   retryable BOOLEAN NOT NULL DEFAULT FALSE,
   started_at TIMESTAMP,
   completed_at TIMESTAMP,
-  UNIQUE(run_id, idempotency_key)
+  UNIQUE(run_id, idempotency_key),
+  FOREIGN KEY (run_id) REFERENCES research_runs(id)
 );
 
-CREATE TABLE approval_requests (
+CREATE TABLE IF NOT EXISTS approval_requests (
   id VARCHAR PRIMARY KEY,
   step_id VARCHAR NOT NULL,
   payload_json JSON NOT NULL,
@@ -36,22 +38,25 @@ CREATE TABLE approval_requests (
   actor VARCHAR,
   reason VARCHAR,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  resolved_at TIMESTAMP
+  resolved_at TIMESTAMP,
+  FOREIGN KEY (step_id) REFERENCES research_run_steps(id)
 );
 
-CREATE TABLE research_notes (
+CREATE TABLE IF NOT EXISTS research_notes (
   id VARCHAR PRIMARY KEY,
   run_id VARCHAR NOT NULL,
   title VARCHAR NOT NULL,
   body VARCHAR NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (run_id) REFERENCES research_runs(id)
 );
 
-CREATE TABLE citations (
+CREATE TABLE IF NOT EXISTS citations (
   id VARCHAR PRIMARY KEY,
   note_id VARCHAR,
   document_id VARCHAR NOT NULL,
   title VARCHAR NOT NULL,
   published_at TIMESTAMP,
-  locator VARCHAR
+  locator VARCHAR,
+  FOREIGN KEY (note_id) REFERENCES research_notes(id)
 );
