@@ -30,7 +30,8 @@ export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: 
         source = sourceFactory(`/v1/chats/${encodeURIComponent(chatId)}/events${lastId ? `?lastEventId=${lastId}` : ""}`);
         source.onopen = () => onConnection(true);
         source.onerror = () => { onConnection(false); source?.close(); setTimeout(connect, 250); };
-        source.onmessage = (message) => { const event = { id: Number(message.lastEventId), type: message.type, data: JSON.parse(message.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } };
+        const eventNames = ["message.delta", "message.completed", "citation", "tool.started", "tool.completed", "run.status", "error"];
+        for (const name of eventNames) source.addEventListener(name, (message) => { const eventMessage = message as MessageEvent; const event = { id: Number(eventMessage.lastEventId), type: name, data: JSON.parse(eventMessage.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } });
       };
       connect();
       return () => { stopped = true; source?.close(); };

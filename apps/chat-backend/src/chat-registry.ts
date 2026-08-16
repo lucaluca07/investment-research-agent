@@ -90,7 +90,7 @@ export class ChatRegistry {
       const generation = state.generation;
       state.activeRunId = runId;
       state.idempotency.set(idempotencyKey, { runId });
-      await this.enqueueEmit(chatId, "run.started", { run_id: runId });
+      await this.enqueueEmit(chatId, "run.status", { run_id: runId, status: "running" });
       state.assistantText.set(runId, "");
       state.unsubscribe?.();
       state.unsubscribe = session.subscribe((event) => this.handlePiEvent(chatId, event, runId, generation));
@@ -113,7 +113,7 @@ export class ChatRegistry {
       try { if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled"); } catch (error) { persistenceError = error; }
       if (!persistenceError) {
         state.activeRunId = undefined;
-        try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch (error) { persistenceError = error; }
+        try { await this.enqueueEmit(chatId, "run.status", { run_id: runId, status: "cancelled" }); } catch (error) { persistenceError = error; }
       }
     } finally {
       if (persistenceError) state.activeRunId = runId;
@@ -129,12 +129,12 @@ export class ChatRegistry {
         const content = state.assistantText.get(runId) ?? "";
         if (content) await this.researchClient.appendMessage(chatId, { role: "assistant", content });
         await this.enqueueEmit(chatId, "message.completed", { run_id: runId, content });
-        await this.enqueueEmit(chatId, "run.completed", { run_id: runId });
+        await this.enqueueEmit(chatId, "run.status", { run_id: runId, status: "succeeded" });
         if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "succeeded");
       }
     } catch (error) {
       if (state.generation === generation && typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
-      if (state.generation === generation) await this.enqueueEmit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
+      if (state.generation === generation) await this.enqueueEmit(chatId, "error", { run_id: runId, message: "research run failed", retryable: true });
     } finally {
       if (state.activeRunId === runId) state.activeRunId = undefined;
     }
@@ -148,7 +148,7 @@ export class ChatRegistry {
   }
 
   private handlePiEvent(chatId: string, event: unknown, eventRunId: string, runGeneration: number): void {
-    const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
+    const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string; result?: unknown };
     const state = this.requireChat(chatId);
     if (!state.activeRunId || state.activeRunId !== eventRunId || runGeneration !== state.generation) return;
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
@@ -158,7 +158,9 @@ export class ChatRegistry {
     } else if (value.type === "tool_execution_start") {
       this.enqueueEmit(chatId, "tool.started", { tool_name: value.toolName ?? "research_tool" });
     } else if (value.type === "tool_execution_end") {
-      this.enqueueEmit(chatId, "tool.completed", { tool_name: value.toolName ?? "research_tool" });
+      const data: Record<string, unknown> = { tool_name: value.toolName ?? "research_tool", ...(typeof value.result === "object" && value.result ? value.result as Record<string, unknown> : {}) };
+      this.enqueueEmit(chatId, "tool.completed", data);
+      if (Array.isArray(data.citations)) for (const citation of data.citations) if (citation && typeof citation === "object") this.enqueueEmit(chatId, "citation", citation as Record<string, unknown>);
     }
   }
 
