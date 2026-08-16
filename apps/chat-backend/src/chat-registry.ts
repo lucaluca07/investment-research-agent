@@ -127,8 +127,9 @@ export class ChatRegistry {
       await session.prompt(content);
       if (state.activeRunId === runId && state.generation === generation) {
         const content = state.assistantText.get(runId) ?? "";
-        if (content) await this.researchClient.appendMessage(chatId, { role: "assistant", content });
-        await this.enqueueEmit(chatId, "message.completed", { run_id: runId, content });
+        let messageId: string | undefined;
+        if (content) messageId = (await this.researchClient.appendMessage(chatId, { role: "assistant", content })).id;
+        await this.enqueueEmit(chatId, "message.completed", { run_id: runId, message_id: messageId, content });
         await this.enqueueEmit(chatId, "run.status", { run_id: runId, status: "succeeded" });
         if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "succeeded");
       }

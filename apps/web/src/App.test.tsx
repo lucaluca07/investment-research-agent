@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 import type { ChatApi } from "./lib/chat-api.js";
+import { createChatApi } from "./lib/chat-api.js";
 
 function fakeApi(): ChatApi { return { listChats: vi.fn().mockResolvedValue([]), createChat: vi.fn().mockResolvedValue({ id: "chat-1", pi_session_id: "pi-1" }), getMessages: vi.fn().mockResolvedValue({ messages: [] }), sendMessage: vi.fn().mockResolvedValue({ runId: "run-1" }), stop: vi.fn(), subscribe: vi.fn().mockReturnValue(() => {}) }; }
 
@@ -23,5 +24,21 @@ describe("web chat", () => {
     expect(api.getMessages).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "停止" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("停止失败"));
+  });
+
+  it("uses named EventSource listeners and Last-Event-ID dedupe", () => {
+    const listeners: Record<string, (event: MessageEvent) => void> = {};
+    const source = { addEventListener: (name: string, callback: (event: MessageEvent) => void) => { listeners[name] = callback; }, close: vi.fn() } as unknown as EventSource;
+    const factory = vi.fn().mockReturnValue(source);
+    const api = createChatApi(vi.fn() as never, factory);
+    const received: any[] = [];
+    const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
+    expect(factory).toHaveBeenCalledWith("/v1/chats/chat-1/events");
+    expect(listeners["message.delta"]).toBeTypeOf("function");
+    listeners["message.delta"](new MessageEvent("message.delta", { data: JSON.stringify({ run_id: "run-1", delta: "A" }), lastEventId: "7" }));
+    listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
+    listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
+    expect(received.map((event) => event.type)).toEqual(["message.delta", "message.completed"]);
+    dispose(); expect(source.close).toHaveBeenCalled();
   });
 });
