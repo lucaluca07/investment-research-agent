@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from .db import Database
-from .runs import IllegalTransition, RunStore
+from .runs import CitationOwnershipConflict, IllegalTransition, RunStore
 from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixture_citations
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,8 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CitationOwnershipConflict as exc:
+            raise HTTPException(status_code=409, detail="citation already belongs to another note") from exc
         except (KeyError, IllegalTransition) as exc:
             code = 404 if isinstance(exc, KeyError) else 409
             raise HTTPException(status_code=code, detail="run not found" if code == 404 else str(exc)) from exc

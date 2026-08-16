@@ -16,12 +16,12 @@ def client(monkeypatch):
         yield test_client
 
 
-def _run(client):
-    chat = client.post("/v1/chats", json={"chat_id": "chat-1"})
+def _run(client, chat_id="chat-1"):
+    chat = client.post("/v1/chats", json={"chat_id": chat_id})
     assert chat.status_code == 201
     response = client.post(
         "/v1/research-runs",
-        json={"chat_id": "chat-1", "pi_session_id": "pi-1", "model": "test/model"},
+        json={"chat_id": chat_id, "pi_session_id": "pi-1", "model": "test/model"},
     )
     assert response.status_code == 201
     return response.json()["id"]
@@ -146,6 +146,33 @@ def test_save_note_rejects_duplicate_citations(client):
         },
     )
     assert response.status_code == 422
+
+
+def test_citation_ownership_conflict_preserves_first_note(client):
+    first_run = _run(client, "owner-chat")
+    second_run = _run(client, "other-chat")
+    request = {
+        "run_id": first_run,
+        "idempotency_key": "owner-key",
+        "title": "First note",
+        "body": "Original owner",
+        "citation_ids": ["fixture:300476:2026-08-14"],
+    }
+    first = client.post("/v1/tools/save-research-note", json=request)
+    assert first.status_code == 200
+
+    conflict = client.post(
+        "/v1/tools/save-research-note",
+        json={**request, "run_id": second_run, "idempotency_key": "other-key"},
+    )
+    assert conflict.status_code == 409
+    with client.app.state.database.read() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM research_notes").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM research_run_steps").fetchone()[0] == 1
+        owner = connection.execute("SELECT note_id FROM citations WHERE id = ?", [
+            "fixture:300476:2026-08-14"
+        ]).fetchone()[0]
+    assert owner == first.json()["note_id"]
 
 
 def test_application_state_endpoints_do_not_expose_database_path(client):

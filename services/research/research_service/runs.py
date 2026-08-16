@@ -16,6 +16,10 @@ class IllegalTransition(RuntimeError):
     pass
 
 
+class CitationOwnershipConflict(RuntimeError):
+    pass
+
+
 class RunStore:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -94,6 +98,13 @@ class RunStore:
                 if existing[1] != SUCCEEDED:
                     raise IllegalTransition(f"step is already {existing[1]}")
                 return _json_object(existing[3]) or {}
+
+            owned = connection.execute(
+                "SELECT id FROM citations WHERE id IN (SELECT UNNEST(?)) AND note_id IS NOT NULL",
+                [citation_ids],
+            ).fetchone()
+            if owned:
+                raise CitationOwnershipConflict(f"citation already belongs to a note: {owned[0]}")
 
             step_id = str(uuid4())
             connection.execute(
