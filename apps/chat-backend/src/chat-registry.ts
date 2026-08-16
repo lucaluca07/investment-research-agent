@@ -78,6 +78,7 @@ export class ChatRegistry {
         result = { status: "replayed", runId };
         return;
       }
+      if (run.status === "running") throw new Error("chat already has an active run; retryable");
       await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
       const generation = state.generation;
       state.activeRunId = runId;
@@ -101,10 +102,12 @@ export class ChatRegistry {
     let persistenceError: unknown;
     try {
       try { if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled"); } catch (error) { persistenceError = error; }
-      state.activeRunId = undefined;
-      if (!persistenceError) { try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch (error) { persistenceError = error; } }
+      if (!persistenceError) {
+        state.activeRunId = undefined;
+        try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch (error) { persistenceError = error; }
+      }
     } finally {
-      state.activeRunId = undefined;
+      if (persistenceError) state.activeRunId = runId;
     }
     if (persistenceError) throw persistenceError;
     return { runId };
@@ -138,7 +141,7 @@ export class ChatRegistry {
   private handlePiEvent(chatId: string, event: unknown): void {
     const value = event as { type?: string; generation?: number; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
     const state = this.requireChat(chatId);
-    if (!state.activeRunId || (value.generation !== undefined && value.generation !== state.generation)) return;
+    if (!state.activeRunId || value.generation === undefined || value.generation !== state.generation) return;
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
       const delta = value.assistantMessageEvent.delta ?? "";
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);
