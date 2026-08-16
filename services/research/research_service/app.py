@@ -149,6 +149,8 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             return store(request).get_chat(chat_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except IllegalTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -158,6 +160,8 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             messages = store(request).list_messages(chat_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"messages": [
             {"id": message.id, "chat_id": message.chat_id, "role": message.role,
              "content": message.content, "created_at": message.created_at}

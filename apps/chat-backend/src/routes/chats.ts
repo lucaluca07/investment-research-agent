@@ -49,9 +49,14 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const seen = new Set<number>();
+    let replaying = true;
+    const pending: Array<{ id: number; type: string; data: Record<string, unknown> }> = [];
     const write = (event: { id: number; type: string; data: Record<string, unknown> }) => { if (seen.has(event.id)) return; seen.add(event.id); reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`); };
-    const unsubscribe = registry.subscribe(chatId, write);
-    for (const event of await client.listEvents(chatId, Number.isFinite(last) ? last : 0)) write(event);
+    const unsubscribe = registry.subscribe(chatId, (event) => { if (replaying) pending.push(event); else write(event); });
+    const replay = await client.listEvents(chatId, Number.isFinite(last) ? last : 0);
+    for (const event of [...replay, ...pending].sort((a, b) => a.id - b.id)) write(event);
+    replaying = false;
+    for (const event of pending.sort((a, b) => a.id - b.id)) write(event);
     const heartbeat = setInterval(() => reply.raw.write(": heartbeat\n\n"), 15000);
     request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
   });

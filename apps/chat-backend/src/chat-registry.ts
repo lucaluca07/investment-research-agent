@@ -85,6 +85,8 @@ export class ChatRegistry {
       state.idempotency.set(idempotencyKey, { runId });
       await this.enqueueEmit(chatId, "run.started", { run_id: runId });
       state.assistantText.set(runId, "");
+      state.unsubscribe?.();
+      state.unsubscribe = session.subscribe((event) => this.handlePiEvent(chatId, event, runId, generation));
       void this.runPrompt(chatId, state, session, content, runId, generation);
       result = { status: "accepted", runId };
     }).finally(resolve);
@@ -134,14 +136,14 @@ export class ChatRegistry {
   private async getSession(chatId: string, state: ChatState): Promise<SessionLike> {
     if (state.session) return state.session;
     state.session = await this.sessionFactory(state.sessionId);
-    state.unsubscribe = state.session.subscribe((event) => this.handlePiEvent(chatId, event, state.activeRunId ? state.generation : undefined));
+    state.unsubscribe = undefined;
     return state.session;
   }
 
-  private handlePiEvent(chatId: string, event: unknown, runGeneration?: number): void {
+  private handlePiEvent(chatId: string, event: unknown, eventRunId: string, runGeneration: number): void {
     const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
     const state = this.requireChat(chatId);
-    if (!state.activeRunId || runGeneration === undefined || runGeneration !== state.generation) return;
+    if (!state.activeRunId || state.activeRunId !== eventRunId || runGeneration !== state.generation) return;
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
       const delta = value.assistantMessageEvent.delta ?? "";
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);
