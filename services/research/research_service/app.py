@@ -149,8 +149,6 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             return store(request).get_chat(chat_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except IllegalTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -188,6 +186,8 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             message = store(request).append_message(chat_id, payload.role, payload.content, payload.idempotency_key)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {
             "id": message.id, "chat_id": message.chat_id, "role": message.role,
             "content": message.content, "created_at": message.created_at,
@@ -200,7 +200,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail="invalid research run request") from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except IllegalTransition as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception:
