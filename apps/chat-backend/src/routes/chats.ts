@@ -1,0 +1,65 @@
+import type { FastifyInstance } from "fastify";
+import { ResearchClientError, type ResearchClient } from "../research-client.js";
+import { ChatRegistry } from "../chat-registry.js";
+import { randomUUID } from "node:crypto";
+
+type MessageBody = { content: string; idempotency_key: string };
+
+export async function registerChatRoutes(app: FastifyInstance, client: ResearchClient, registry: ChatRegistry): Promise<void> {
+  app.get("/v1/chats", async () => client.listChats());
+
+  app.post("/v1/chats", async (request, reply) => {
+    const body = (request.body ?? {}) as { chat_id?: string };
+    const result = await client.createChat(body.chat_id);
+    const chatId = String(result.id ?? body.chat_id ?? randomUUID());
+    registry.addChat(chatId, result.pi_session_id);
+    return reply.code(201).send(result);
+  });
+
+  app.get("/v1/chats/:chatId/messages", async (request, reply) => {
+    const chatId = (request.params as { chatId: string }).chatId;
+    if (!registry.hasChat(chatId)) return reply.code(404).send({ detail: "chat not found" });
+    return client.getChatHistory(chatId);
+  });
+
+  app.post("/v1/chats/:chatId/messages", async (request, reply) => {
+    const chatId = (request.params as { chatId: string }).chatId;
+    const body = request.body as MessageBody;
+    if (!registry.hasChat(chatId)) return reply.code(404).send({ detail: "chat not found" });
+    if (!body || !body.content?.trim() || !body.idempotency_key?.trim()) return reply.code(422).send({ detail: "content and idempotency_key are required" });
+    try {
+      const result = await registry.prompt(chatId, body.content.trim(), body.idempotency_key.trim());
+      return reply.code(result.status === "accepted" ? 202 : 200).send(result);
+    } catch (error) {
+      if (error instanceof Error && error.message === "chat already has an active run") return reply.code(409).send({ detail: error.message });
+      if (error instanceof ResearchClientError) return reply.code(error.status).send({ detail: error.message });
+      throw error;
+    }
+  });
+
+  app.post("/v1/chats/:chatId/stop", async (request, reply) => {
+    const chatId = (request.params as { chatId: string }).chatId;
+    if (!registry.hasChat(chatId)) return reply.code(404).send({ detail: "chat not found" });
+    try { return reply.send(await registry.stop(chatId)); }
+    catch (error) { return reply.code(error instanceof ResearchClientError ? error.status : 500).send({ detail: error instanceof Error ? error.message : "cannot stop run" }); }
+  });
+
+  app.get("/v1/chats/:chatId/events", async (request, reply) => {
+    const chatId = (request.params as { chatId: string }).chatId;
+    if (!registry.hasChat(chatId)) return reply.code(404).send({ detail: "chat not found" });
+    const last = Number(request.headers["last-event-id"] ?? (request.query as { lastEventId?: string }).lastEventId);
+    reply.hijack();
+    reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    const seen = new Set<number>();
+    let replaying = true;
+    const pending: Array<{ id: number; type: string; data: Record<string, unknown> }> = [];
+    const write = (event: { id: number; type: string; data: Record<string, unknown> }) => { if (seen.has(event.id)) return; seen.add(event.id); reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`); };
+    const unsubscribe = registry.subscribe(chatId, (event) => { if (replaying) pending.push(event); else write(event); });
+    const replay = await client.listEvents(chatId, Number.isFinite(last) ? last : 0);
+    for (const event of [...replay, ...pending].sort((a, b) => a.id - b.id)) write(event);
+    replaying = false;
+    for (const event of pending.sort((a, b) => a.id - b.id)) write(event);
+    const heartbeat = setInterval(() => reply.raw.write(": heartbeat\n\n"), 15000);
+    request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
+  });
+}

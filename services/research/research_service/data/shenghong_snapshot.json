@@ -1,0 +1,18 @@
+{
+  "company_name": "胜宏科技",
+  "ticker": "300476.SZ",
+  "as_of_date": "2026-08-14",
+  "metrics": {
+    "revenue_cny_m": 12345.6,
+    "gross_margin_pct": 27.4,
+    "pcb_capacity_k_sq_m": 890.0
+  },
+  "citations": [
+    {
+      "document_id": "fixture:300476:2026-08-14",
+      "title": "胜宏科技 2026-08-14 公司资料",
+      "published_at": "2026-08-14",
+      "locator": "fixture://300476.SZ/2026-08-14"
+    }
+  ]
+}
