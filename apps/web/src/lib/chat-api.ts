@@ -1,6 +1,7 @@
 export type ChatMessage = { id: string; role: "user" | "assistant" | "tool"; content: string; created_at?: string };
 export type ChatEvent = { id: number; type: string; data: Record<string, unknown> };
 export interface ChatApi {
+  listChats(): Promise<Array<{ id: string; pi_session_id: string }>>;
   createChat(): Promise<{ id: string; pi_session_id: string }>;
   getMessages(chatId: string): Promise<{ messages: ChatMessage[] }>;
   sendMessage(chatId: string, content: string, idempotencyKey: string): Promise<{ runId: string }>;
@@ -15,6 +16,7 @@ export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: 
     return response.json() as Promise<T>;
   };
   return {
+    listChats: () => request("/v1/chats"),
     createChat: () => request("/v1/chats", { method: "POST", body: "{}" }),
     getMessages: (chatId) => request(`/v1/chats/${encodeURIComponent(chatId)}/messages`),
     sendMessage: (chatId, content, idempotencyKey) => request(`/v1/chats/${encodeURIComponent(chatId)}/messages`, { method: "POST", body: JSON.stringify({ content, idempotency_key: idempotencyKey }) }),
