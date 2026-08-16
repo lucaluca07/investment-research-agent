@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import {
@@ -21,26 +22,31 @@ type SessionFactory = (options: Record<string, unknown>) => Promise<unknown>;
 
 export type ResearchSessionOptions = {
   client?: ResearchClient;
+  sessionId: string;
   runtimeDir?: string;
   createAgentSession?: SessionFactory;
   modelRuntime?: ModelRuntime;
   model?: Model;
 };
 
-export async function createResearchSession(options: ResearchSessionOptions = {}): Promise<unknown> {
+export async function createResearchSession(options: ResearchSessionOptions): Promise<unknown> {
+  if (!options.sessionId?.trim()) throw new Error("sessionId is required");
   const runtimeDir = options.runtimeDir ?? process.env.IRA_RUNTIME_DIR ?? path.join(process.cwd(), ".ira-runtime");
-  const cwd = path.join(runtimeDir, "empty-cwd");
-  const agentDir = path.join(runtimeDir, "agent");
-  const sessionDir = path.join(runtimeDir, "sessions");
+  const sessionKey = createHash("sha256").update(options.sessionId).digest("hex").slice(0, 32);
+  const sessionRoot = path.join(runtimeDir, "sessions", sessionKey);
+  const cwd = path.join(sessionRoot, "empty-cwd");
+  const agentDir = path.join(sessionRoot, "agent");
+  const sessionDir = path.join(sessionRoot, "session");
   await Promise.all([mkdir(cwd, { recursive: true }), mkdir(agentDir, { recursive: true }), mkdir(sessionDir, { recursive: true })]);
 
   const client = options.client ?? new ResearchClient(process.env.IRA_RESEARCH_SERVICE_URL ?? "http://127.0.0.1:8000");
   const modelRuntime = options.modelRuntime ?? await createModelRuntime(agentDir);
   const model = options.model ?? selectModel(modelRuntime);
+  const settingsManager = SettingsManager.inMemory();
   const resourceLoader: ResourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
-    settingsManager: SettingsManager.inMemory(),
+    settingsManager,
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -54,7 +60,7 @@ export async function createResearchSession(options: ResearchSessionOptions = {}
     cwd,
     agentDir,
     sessionManager: SessionManager.create(cwd, sessionDir),
-    settingsManager: SettingsManager.inMemory(),
+    settingsManager,
     modelRuntime,
     model,
     noTools: "builtin",

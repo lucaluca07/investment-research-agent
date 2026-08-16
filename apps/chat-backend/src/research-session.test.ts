@@ -59,6 +59,7 @@ describe("research-only pi session", () => {
     const createAgentSession = vi.fn().mockResolvedValue({ session: { dispose: vi.fn() } });
     await createResearchSession({
       client: {} as ResearchClient,
+      sessionId: "chat-1",
       runtimeDir: "/tmp/ira-task4-test",
       createAgentSession,
       modelRuntime: {} as never,
@@ -73,5 +74,26 @@ describe("research-only pi session", () => {
     expect(options.resourceLoader.getExtensions().extensions).toEqual([]);
     expect(options.resourceLoader.getSkills().skills).toEqual([]);
     expect(options.resourceLoader.getPrompts().prompts).toEqual([]);
+  });
+
+  it("isolates cwd, agentDir, credentials, and session files per stable session id", async () => {
+    const createAgentSession = vi.fn().mockResolvedValue({ session: { dispose: vi.fn() } });
+    const common = {
+      client: {} as ResearchClient,
+      runtimeDir: "/tmp/ira-task4-isolation-test",
+      createAgentSession,
+      modelRuntime: {} as never,
+      model: {} as never,
+    };
+    await createResearchSession({ ...common, sessionId: "chat-alpha" });
+    await createResearchSession({ ...common, sessionId: "chat-beta" });
+    const first = createAgentSession.mock.calls[0][0];
+    const second = createAgentSession.mock.calls[1][0];
+    expect(first.cwd).not.toBe(second.cwd);
+    expect(first.agentDir).not.toBe(second.agentDir);
+    expect(first.sessionManager).not.toBe(second.sessionManager);
+    expect(first.cwd).toContain("sessions");
+    expect(first.agentDir).toContain("agent");
+    expect(first.sessionManager).toBeDefined();
   });
 });
