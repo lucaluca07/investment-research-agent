@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 type MessageBody = { content: string; idempotency_key: string };
 
 export async function registerChatRoutes(app: FastifyInstance, client: ResearchClient, registry: ChatRegistry): Promise<void> {
+  app.get("/v1/chats", async () => client.listChats());
+
   app.post("/v1/chats", async (request, reply) => {
     const body = (request.body ?? {}) as { chat_id?: string };
     const result = await client.createChat(body.chat_id);
