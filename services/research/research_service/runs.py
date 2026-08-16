@@ -23,7 +23,7 @@ class RunStore:
     def create_run(self, chat_id: str, pi_session_id: str, model: str) -> ResearchRun:
         run_id = str(uuid4())
         with self.database.transaction() as connection:
-            self.create_chat_in_transaction(connection, chat_id)
+            self._require_chat(connection, chat_id)
             created_at = connection.execute(
                 "INSERT INTO research_runs (id, chat_id, pi_session_id, model) "
                 "VALUES (?, ?, ?, ?) RETURNING created_at",

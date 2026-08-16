@@ -87,6 +87,7 @@ def test_save_note_fault_rolls_back_and_retry_replays_original_result(client, mo
             headers={"X-IRA-Test-Fail-After-Note": "1"},
         )
         assert failed.status_code == 500
+        assert failed.json()["detail"] == "internal server error"
         retried = test_client.post("/v1/tools/save-research-note", json={**request, "run_id": run_id})
         assert retried.status_code == 200
         counts = test_client.get("/v1/test/counts").json()
@@ -120,6 +121,14 @@ def test_save_note_rejects_unknown_run(client):
             "body": "Body",
             "citation_ids": ["fixture:300476:2026-08-14"],
         },
+    )
+    assert response.status_code == 404
+
+
+def test_create_run_rejects_unknown_chat(client):
+    response = client.post(
+        "/v1/research-runs",
+        json={"chat_id": "missing-chat", "pi_session_id": "pi-1", "model": "test/model"},
     )
     assert response.status_code == 404
 
@@ -174,6 +183,22 @@ def test_message_validates_role_and_content(client, payload):
     assert client.post("/v1/chats/validation-chat/messages", json=payload).status_code == 422
 
 
+@pytest.mark.parametrize(
+    "endpoint,payload",
+    [
+        ("/v1/chats", {"chat_id": "   "}),
+        ("/v1/chats/chat-id/pi-session", {"pi_session_id": "   "}),
+        ("/v1/research-runs", {"chat_id": "chat-id", "pi_session_id": "pi", "model": "   "}),
+        ("/v1/tools/query-company-snapshot", {"ticker": "   "}),
+    ],
+)
+def test_api_rejects_whitespace_identifiers(client, endpoint, payload):
+    if endpoint == "/v1/chats/chat-id/pi-session" or endpoint == "/v1/research-runs":
+        client.post("/v1/chats", json={"chat_id": "chat-id"})
+    method = client.patch if endpoint.endswith("pi-session") else client.post
+    assert method(endpoint, json=payload).status_code == 422
+
+
 def test_production_fault_hook_is_unavailable_even_with_environment(client, monkeypatch):
     monkeypatch.setenv("IRA_TEST_MODE", "1")
     run_id = _run(client)
@@ -202,6 +227,12 @@ def test_count_endpoint_requires_test_mode(client, monkeypatch):
 
 def test_count_endpoint_is_available_only_in_test_mode(monkeypatch):
     monkeypatch.setenv("IRA_TEST_MODE", "1")
-    with TestClient(create_app(database_path=":memory:")) as test_client:
+    with TestClient(create_app(database_path=":memory:", test_mode=True)) as test_client:
         assert test_client.get("/v1/test/counts").status_code == 200
         assert "research_notes" in test_client.get("/v1/test/counts").json()
+
+
+def test_count_endpoint_is_not_exposed_by_environment_alone(monkeypatch):
+    monkeypatch.setenv("IRA_TEST_MODE", "1")
+    with TestClient(create_app(database_path=":memory:")) as test_client:
+        assert test_client.get("/v1/test/counts").status_code == 404

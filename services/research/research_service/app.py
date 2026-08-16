@@ -14,25 +14,37 @@ from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixtur
 logger = logging.getLogger(__name__)
 
 
-class ChatRequest(BaseModel):
+class RequestModel(BaseModel):
+    @field_validator("*", mode="before")
+    @classmethod
+    def normalize_non_blank_strings(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if not normalized:
+                raise ValueError("value must not be blank")
+            return normalized
+        return value
+
+
+class ChatRequest(RequestModel):
     chat_id: str | None = None
 
 
-class PiSessionRequest(BaseModel):
+class PiSessionRequest(RequestModel):
     pi_session_id: str
 
 
-class RunRequest(BaseModel):
+class RunRequest(RequestModel):
     chat_id: str
     pi_session_id: str
     model: str
 
 
-class SnapshotRequest(BaseModel):
+class SnapshotRequest(RequestModel):
     ticker: str
 
 
-class NoteRequest(BaseModel):
+class NoteRequest(RequestModel):
     run_id: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -40,7 +52,7 @@ class NoteRequest(BaseModel):
     citation_ids: list[str] = Field(min_length=1)
 
 
-class MessageRequest(BaseModel):
+class MessageRequest(RequestModel):
     role: Literal["user", "assistant", "tool"]
     content: str = Field(min_length=1)
 
@@ -107,8 +119,9 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         except (KeyError, IllegalTransition) as exc:
             code = 404 if isinstance(exc, KeyError) else 409
             raise HTTPException(status_code=code, detail="run not found" if code == 404 else str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except RuntimeError:
+            logger.exception("research note fault or persistence failure")
+            raise HTTPException(status_code=500, detail="internal server error") from None
 
     @app.post("/v1/chats", status_code=status.HTTP_201_CREATED)
     def create_chat(payload: ChatRequest, request: Request) -> dict[str, str]:
@@ -165,7 +178,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
 
     @app.get("/v1/test/counts")
     def counts(request: Request) -> dict[str, int]:
-        if os.getenv("IRA_TEST_MODE") != "1":
+        if not test_mode or os.getenv("IRA_TEST_MODE") != "1":
             raise HTTPException(status_code=404, detail="not found")
         with store(request).database.read() as connection:
             return {

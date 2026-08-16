@@ -11,7 +11,10 @@ from research_service.runs import IllegalTransition, RunStore
 def store():
     database = Database(":memory:")
     try:
-        yield RunStore(database)
+        run_store = RunStore(database)
+        run_store.create_chat("chat-1")
+        run_store.create_chat("chat-2")
+        yield run_store
     finally:
         database.close()
 
@@ -145,7 +148,9 @@ def test_transaction_rolls_back_failed_write(store):
 def test_file_database_persists_runs(tmp_path):
     path = str(tmp_path / "research.duckdb")
     database = Database(path)
-    run = RunStore(database).create_run("chat-1", "pi-1", "test/model")
+    run_store = RunStore(database)
+    run_store.create_chat("chat-1")
+    run = run_store.create_run("chat-1", "pi-1", "test/model")
     database.close()
 
     reopened = Database(path)
