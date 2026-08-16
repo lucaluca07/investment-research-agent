@@ -197,12 +197,14 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             raise HTTPException(status_code=404, detail="chat not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="invalid research run request") from exc
+        except IllegalTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception:
             logger.exception("failed to create research run")
             raise HTTPException(status_code=500, detail="internal server error") from None
         return {
             "id": run.id, "chat_id": run.chat_id, "pi_session_id": run.pi_session_id,
-            "model": run.model, "created_at": run.created_at, "status": run.status, "error": run.error,
+            "model": run.model, "created_at": run.created_at, "status": run.status, "error": run.error, "replayed": run.replayed,
         }
 
     @app.patch("/v1/chats/{chat_id}/pi-session")

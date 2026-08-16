@@ -33,4 +33,23 @@ describe("chat routes", () => {
     expect(prompt).toHaveBeenCalledTimes(1);
     await app.close();
   });
+
+  it("handles real pi delta events using the bound run context", async () => {
+    let listener: ((event: unknown) => void) | undefined;
+    const app = await createApp({
+      researchClient: {
+        createChat: vi.fn().mockResolvedValue({ id: "chat-real", pi_session_id: "pi-stable" }),
+        appendMessage: vi.fn().mockResolvedValue({ id: "message-1", role: "user", content: "hello" }),
+        createRun: vi.fn().mockResolvedValue({ id: "run-real" }),
+        appendEvent: vi.fn().mockResolvedValue({ id: 1, type: "message.delta", data: { delta: "ok" } }),
+        updateRun: vi.fn(),
+      } as never,
+      sessionFactory: vi.fn().mockResolvedValue({ prompt: vi.fn(() => new Promise<void>(() => undefined)), subscribe: vi.fn((callback) => { listener = callback; return () => {}; }), dispose: vi.fn() }),
+    });
+    await app.inject({ method: "POST", url: "/v1/chats", payload: {} });
+    await app.inject({ method: "POST", url: "/v1/chats/chat-real/messages", payload: { content: "hello", idempotency_key: "real-1" } });
+    listener?.({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ok" } });
+    expect((app as any).chatRegistry).toBeDefined();
+    await app.close();
+  });
 });

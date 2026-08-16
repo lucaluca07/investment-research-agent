@@ -78,7 +78,7 @@ export class ChatRegistry {
         result = { status: "replayed", runId };
         return;
       }
-      if (run.status === "running") throw new Error("chat already has an active run; retryable");
+      if (run.status === "running" && run.replayed) throw new Error("chat already has an active run; retryable");
       await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
       const generation = state.generation;
       state.activeRunId = runId;
@@ -134,14 +134,14 @@ export class ChatRegistry {
   private async getSession(chatId: string, state: ChatState): Promise<SessionLike> {
     if (state.session) return state.session;
     state.session = await this.sessionFactory(state.sessionId);
-    state.unsubscribe = state.session.subscribe((event) => this.handlePiEvent(chatId, event));
+    state.unsubscribe = state.session.subscribe((event) => this.handlePiEvent(chatId, event, state.activeRunId ? state.generation : undefined));
     return state.session;
   }
 
-  private handlePiEvent(chatId: string, event: unknown): void {
-    const value = event as { type?: string; generation?: number; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
+  private handlePiEvent(chatId: string, event: unknown, runGeneration?: number): void {
+    const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
     const state = this.requireChat(chatId);
-    if (!state.activeRunId || value.generation === undefined || value.generation !== state.generation) return;
+    if (!state.activeRunId || runGeneration === undefined || runGeneration !== state.generation) return;
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
       const delta = value.assistantMessageEvent.delta ?? "";
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);

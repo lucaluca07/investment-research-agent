@@ -16,6 +16,7 @@ class ResearchRun:
     created_at: datetime | None = None
     status: Literal["running", "succeeded", "failed", "cancelled"] = "running"
     error: dict[str, Any] | None = None
+    replayed: bool = False
 
 
 @dataclass(frozen=True)

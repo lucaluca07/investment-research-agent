@@ -21,7 +21,7 @@ export type SaveResearchNoteRequest = {
 export type Chat = { id: string; pi_session_id: string };
 export type ChatMessage = { id: string; chat_id: string; role: "user" | "assistant" | "tool"; content: string; created_at: string };
 export type ChatHistory = { messages: ChatMessage[] };
-export type ResearchRun = { id: string; chat_id: string; pi_session_id: string; model: string; status: "running" | "succeeded" | "failed" | "cancelled"; error: Record<string, unknown> | null; created_at: string };
+export type ResearchRun = { id: string; chat_id: string; pi_session_id: string; model: string; status: "running" | "succeeded" | "failed" | "cancelled"; error: Record<string, unknown> | null; created_at: string; replayed?: boolean };
 export type PersistedChatEvent = { id: number; type: string; data: Record<string, unknown> };
 
 export type ResearchClientOptions = {

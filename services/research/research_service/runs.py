@@ -31,7 +31,7 @@ class RunStore:
             self._require_chat(connection, chat_id)
             existing = connection.execute("SELECT id, chat_id, pi_session_id, model, created_at, status, error_json FROM research_runs WHERE chat_id = ? AND idempotency_key = ?", [chat_id, idempotency_key]).fetchone()
             if existing:
-                return ResearchRun(existing[0], existing[1], existing[2], existing[3], existing[4], existing[5], _json_object(existing[6]))
+                return ResearchRun(existing[0], existing[1], existing[2], existing[3], existing[4], existing[5], _json_object(existing[6]), True)
             if connection.execute("SELECT 1 FROM research_runs WHERE chat_id = ? AND status = 'running' LIMIT 1", [chat_id]).fetchone():
                 raise IllegalTransition("chat already has an active run")
             created_at = connection.execute(
