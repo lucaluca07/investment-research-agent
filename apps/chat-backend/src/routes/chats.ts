@@ -39,7 +39,7 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     const chatId = (request.params as { chatId: string }).chatId;
     if (!registry.hasChat(chatId)) return reply.code(404).send({ detail: "chat not found" });
     try { return reply.send(await registry.stop(chatId)); }
-    catch (error) { return reply.code(409).send({ detail: error instanceof Error ? error.message : "cannot stop run" }); }
+    catch (error) { return reply.code(error instanceof ResearchClientError ? error.status : 500).send({ detail: error instanceof Error ? error.message : "cannot stop run" }); }
   });
 
   app.get("/v1/chats/:chatId/events", async (request, reply) => {

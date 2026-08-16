@@ -97,13 +97,16 @@ export class ChatRegistry {
     const runId = state.activeRunId;
     if (!runId) throw new Error("chat has no active run");
     state.generation += 1;
-    try { await state.session?.abort?.(); }
-    catch { /* cancellation is persisted below even if pi abort rejects */ }
-    finally {
-      try { if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled"); } catch { /* best effort state update */ }
+    try { await state.session?.abort?.(); } catch { /* cancellation continues */ }
+    let persistenceError: unknown;
+    try {
+      try { if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled"); } catch (error) { persistenceError = error; }
       state.activeRunId = undefined;
-      try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch { /* best effort event */ }
+      if (!persistenceError) { try { await this.enqueueEmit(chatId, "run.cancelled", { run_id: runId }); } catch (error) { persistenceError = error; } }
+    } finally {
+      state.activeRunId = undefined;
     }
+    if (persistenceError) throw persistenceError;
     return { runId };
   }
 
@@ -133,10 +136,11 @@ export class ChatRegistry {
   }
 
   private handlePiEvent(chatId: string, event: unknown): void {
-    const value = event as { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
+    const value = event as { type?: string; generation?: number; assistantMessageEvent?: { type?: string; delta?: string }; toolName?: string };
+    const state = this.requireChat(chatId);
+    if (!state.activeRunId || (value.generation !== undefined && value.generation !== state.generation)) return;
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
       const delta = value.assistantMessageEvent.delta ?? "";
-      const state = this.requireChat(chatId);
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);
       this.enqueueEmit(chatId, "message.delta", { delta });
     } else if (value.type === "tool_execution_start") {
@@ -158,8 +162,9 @@ export class ChatRegistry {
 
   private enqueueEmit(chatId: string, type: string, data: Record<string, unknown>): Promise<void> {
     const state = this.requireChat(chatId);
-    state.eventQueue = state.eventQueue.then(() => this.emit(chatId, type, data));
-    return state.eventQueue;
+    const operation = state.eventQueue.catch(() => undefined).then(() => this.emit(chatId, type, data));
+    state.eventQueue = operation.catch(() => undefined);
+    return operation;
   }
 
   private requireChat(chatId: string): ChatState {
