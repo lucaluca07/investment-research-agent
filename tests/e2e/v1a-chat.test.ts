@@ -56,6 +56,22 @@ async function startPython(dbPath: string, port: number): Promise<ChildProcess> 
   return child;
 }
 
+async function waitForExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("child process did not exit")), 3000);
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+async function waitForSubscribers(backend: Backend, chatId: string, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (backend.chatRegistry.subscriberCount(chatId) === count) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`subscriber count did not become ${count}`);
+}
+
 describe("V1a real HTTP crash recovery contract", () => {
   it("uses Python DuckDB and Chat Backend HTTP/SSE boundaries", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ira-v1a-e2e-"));
@@ -63,12 +79,13 @@ describe("V1a real HTTP crash recovery contract", () => {
     const pythonPort = 18000 + Math.floor(Math.random() * 500);
     let python = await startPython(dbPath, pythonPort);
     const backendSessions: FakeAgentSession[] = [];
+    const factorySessionIds: string[] = [];
     let backend: Backend | undefined;
     try {
       const clientBase = `http://127.0.0.1:${pythonPort}`;
       backend = await createApp({
         researchClient: new ResearchClient(clientBase),
-        sessionFactory: async (sessionId) => { const session = new FakeAgentSession(sessionId); backendSessions.push(session); return session; },
+        sessionFactory: async (sessionId) => { factorySessionIds.push(sessionId); const mode = backendSessions.length === 0 ? "success" : backendSessions.length === 1 ? "hang" : "error"; const session = new FakeAgentSession(sessionId, mode); backendSessions.push(session); return session; },
       });
       await backend.listen({ host: "127.0.0.1", port: 0 });
       const address = backend.server.address();
@@ -80,32 +97,53 @@ describe("V1a real HTTP crash recovery contract", () => {
 
       const send = await fetch(`${backendUrl}/v1/chats/${chat.id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "research", idempotency_key: "e2e-stable" }) });
       expect(send.status).toBe(202);
-      const events = await readSse(`${backendUrl}/v1/chats/${chat.id}/events`, undefined);
-      expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["message.delta", "message.completed", "run.status"]));
-      const lastId = events.at(-1)!.id;
+      const disconnected = await readSse(`${backendUrl}/v1/chats/${chat.id}/events`, undefined, "message.delta");
+      expect(disconnected.map((event) => event.type)).toContain("message.delta");
+      await waitForSubscribers(backend, chat.id, 0);
+      const lastId = disconnected.at(-1)!.id;
+      const events = await readSse(`${backendUrl}/v1/chats/${chat.id}/events`, lastId, "run.status");
+      expect(events.map((event) => event.type)).toEqual(expect.arrayContaining(["message.completed", "run.status"]));
+      await waitForSubscribers(backend, chat.id, 0);
       const history = await (await fetch(`${backendUrl}/v1/chats/${chat.id}/messages`)).json() as { messages: Array<{ role: string; content: string }> };
       expect(history.messages.some((message) => message.role === "assistant" && message.content === "Victory Giant")).toBe(true);
 
       const replay = await readSse(`${backendUrl}/v1/chats/${chat.id}/events?lastEventId=${lastId}`, lastId, "run.status");
-      expect(replay.map((event) => event.id)).toEqual([lastId + 1]);
+      expect(replay.map((event) => event.id)).toEqual([lastId + 1, lastId + 2]);
       expect((await (await fetch(`${backendUrl}/v1/chats`)).json() as Array<{ pi_session_id: string }>)[0]!.pi_session_id).toBe(chat.pi_session_id);
+
+      const stopChat = await (await fetch(`${backendUrl}/v1/chats`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json() as { id: string };
+      await (await fetch(`${backendUrl}/v1/chats/${stopChat.id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "stop", idempotency_key: "stop-key" }) })).arrayBuffer();
+      const running = await readSse(`${backendUrl}/v1/chats/${stopChat.id}/events`, undefined, "run.status");
+      const runningId = running.at(-1)!.id;
+      const stopped = await fetch(`${backendUrl}/v1/chats/${stopChat.id}/stop`, { method: "POST" });
+      expect(stopped.status).toBe(200);
+      const cancelled = await readSse(`${backendUrl}/v1/chats/${stopChat.id}/events`, runningId, "run.status");
+      expect(cancelled.at(-1)?.data.status).toBe("cancelled");
+      await waitForSubscribers(backend, stopChat.id, 0);
+
+      const errorChat = await (await fetch(`${backendUrl}/v1/chats`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json() as { id: string };
+      await (await fetch(`${backendUrl}/v1/chats/${errorChat.id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "error", idempotency_key: "error-key" }) })).arrayBuffer();
+      const errorEvents = await readSse(`${backendUrl}/v1/chats/${errorChat.id}/events`, undefined, "error");
+      expect(errorEvents.at(-1)?.type).toBe("error");
+      await waitForSubscribers(backend, errorChat.id, 0);
       await backend.close(); backend = undefined;
       python.kill("SIGTERM");
-      await new Promise<void>((resolve) => { python.once("exit", () => resolve()); setTimeout(resolve, 1000); });
+      await waitForExit(python);
       python = await startPython(dbPath, pythonPort);
-      const restarted = await createApp({ researchClient: new ResearchClient(clientBase), sessionFactory: async (sessionId) => { const session = new FakeAgentSession(sessionId); backendSessions.push(session); return session; } });
+      const restarted = await createApp({ researchClient: new ResearchClient(clientBase), sessionFactory: async (sessionId) => { factorySessionIds.push(sessionId); const session = new FakeAgentSession(sessionId, "success"); backendSessions.push(session); return session; } });
       await restarted.listen({ host: "127.0.0.1", port: 0 });
       const restartedAddress = restarted.server.address();
       const restartedUrl = `http://127.0.0.1:${typeof restartedAddress === "object" && restartedAddress ? restartedAddress.port : 0}`;
       const restored = await (await fetch(`${restartedUrl}/v1/chats`)).json() as Array<{ id: string; pi_session_id: string }>;
-      expect(restored).toEqual([{ id: chat.id, pi_session_id: chat.pi_session_id }]);
+      expect(restored).toContainEqual({ id: chat.id, pi_session_id: chat.pi_session_id });
       const replayed = await fetch(`${restartedUrl}/v1/chats/${chat.id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "research", idempotency_key: "e2e-stable" }) });
       expect(replayed.status).toBe(200);
+      expect(factorySessionIds.at(-1)).toBe(chat.pi_session_id);
       await restarted.close();
     } finally {
       await backend?.close();
       python.kill("SIGTERM");
-      await new Promise<void>((resolve) => { python.once("exit", () => resolve()); setTimeout(resolve, 1000); });
+      await waitForExit(python);
       await rm(directory, { recursive: true, force: true });
     }
   }, 15000);

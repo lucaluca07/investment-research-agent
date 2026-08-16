@@ -49,6 +49,10 @@ export class ChatRegistry {
     return this.chats.has(chatId);
   }
 
+  subscriberCount(chatId: string): number {
+    return this.requireChat(chatId).subscribers.size;
+  }
+
   getEvents(chatId: string, lastEventId?: number): ChatEvent[] {
     const state = this.requireChat(chatId);
     return state.events.filter((event) => lastEventId === undefined || event.id > lastEventId);
