@@ -1,0 +1,109 @@
+import json
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from research_service.app import create_app
+
+FIXTURE = Path(__file__).parent / "fixtures/shenghong_snapshot.json"
+
+
+@pytest.fixture
+def client(monkeypatch):
+    monkeypatch.delenv("IRA_TEST_MODE", raising=False)
+    with TestClient(create_app(database_path=":memory:")) as test_client:
+        yield test_client
+
+
+def _run(client):
+    chat = client.post("/v1/chats", json={"chat_id": "chat-1"})
+    assert chat.status_code == 201
+    response = client.post(
+        "/v1/research-runs",
+        json={"chat_id": "chat-1", "pi_session_id": "pi-1", "model": "test/model"},
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def test_company_snapshot_returns_dated_citations(client):
+    response = client.post("/v1/tools/query-company-snapshot", json={"ticker": "300476.SZ"})
+    assert response.status_code == 200
+    assert response.json() == json.loads(FIXTURE.read_text())
+    assert response.json()["citations"][0].keys() == {
+        "document_id", "title", "published_at", "locator"
+    }
+
+
+def test_unknown_ticker_returns_422(client):
+    response = client.post("/v1/tools/query-company-snapshot", json={"ticker": "000001.SZ"})
+    assert response.status_code == 422
+
+
+def test_save_note_replays_original_result(client):
+    run_id = _run(client)
+    request = {
+        "run_id": run_id,
+        "idempotency_key": "run-1:save-note:sha256-abc",
+        "title": "PCB exposure",
+        "body": "Evidence-backed draft",
+        "citation_ids": ["fixture:300476:2026-08-14"],
+    }
+    first = client.post("/v1/tools/save-research-note", json=request)
+    second = client.post("/v1/tools/save-research-note", json=request)
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+
+
+def test_save_note_input_mismatch_returns_conflict(client):
+    run_id = _run(client)
+    request = {
+        "run_id": run_id,
+        "idempotency_key": "stable-key",
+        "title": "First",
+        "body": "Body",
+        "citation_ids": ["fixture:300476:2026-08-14"],
+    }
+    assert client.post("/v1/tools/save-research-note", json=request).status_code == 200
+    request["body"] = "Changed"
+    assert client.post("/v1/tools/save-research-note", json=request).status_code == 409
+
+
+def test_save_note_rejects_invalid_citation(client):
+    run_id = _run(client)
+    response = client.post(
+        "/v1/tools/save-research-note",
+        json={
+            "run_id": run_id,
+            "idempotency_key": "key",
+            "title": "Title",
+            "body": "Body",
+            "citation_ids": ["missing"],
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_application_state_endpoints_do_not_expose_database_path(client):
+    created = client.post("/v1/chats", json={"chat_id": "chat-state"})
+    assert created.status_code == 201
+    assert "database_path" not in created.json()
+    updated = client.patch(
+        "/v1/chats/chat-state/pi-session", json={"pi_session_id": "pi-state"}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["pi_session_id"] == "pi-state"
+    assert client.get("/v1/chats/chat-state/messages").json() == {"messages": []}
+
+
+def test_count_endpoint_requires_test_mode(client, monkeypatch):
+    monkeypatch.setenv("IRA_TEST_MODE", "0")
+    assert client.get("/v1/test/counts").status_code == 404
+
+
+def test_count_endpoint_is_available_only_in_test_mode(monkeypatch):
+    monkeypatch.setenv("IRA_TEST_MODE", "1")
+    with TestClient(create_app(database_path=":memory:")) as test_client:
+        assert test_client.get("/v1/test/counts").status_code == 200
+        assert "research_notes" in test_client.get("/v1/test/counts").json()

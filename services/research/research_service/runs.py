@@ -23,13 +23,72 @@ class RunStore:
     def create_run(self, chat_id: str, pi_session_id: str, model: str) -> ResearchRun:
         run_id = str(uuid4())
         with self.database.transaction() as connection:
-            connection.execute("INSERT INTO chats (id) VALUES (?) ON CONFLICT DO NOTHING", [chat_id])
+            self.create_chat_in_transaction(connection, chat_id)
             created_at = connection.execute(
                 "INSERT INTO research_runs (id, chat_id, pi_session_id, model) "
                 "VALUES (?, ?, ?, ?) RETURNING created_at",
                 [run_id, chat_id, pi_session_id, model],
             ).fetchone()[0]
         return ResearchRun(run_id, chat_id, pi_session_id, model, created_at)
+
+    def create_chat(self, chat_id: str) -> None:
+        with self.database.transaction() as connection:
+            self.create_chat_in_transaction(connection, chat_id)
+
+    @staticmethod
+    def create_chat_in_transaction(connection: Any, chat_id: str) -> None:
+        connection.execute("INSERT INTO chats (id) VALUES (?) ON CONFLICT DO NOTHING", [chat_id])
+
+    def update_pi_session(self, chat_id: str, pi_session_id: str) -> None:
+        with self.database.transaction() as connection:
+            self.create_chat_in_transaction(connection, chat_id)
+            connection.execute("UPDATE chats SET pi_session_id = ? WHERE id = ?", [pi_session_id, chat_id])
+
+    def save_research_note(
+        self,
+        run_id: str,
+        idempotency_key: str,
+        input_hash: str,
+        title: str,
+        body: str,
+        citation_ids: list[str],
+    ) -> dict[str, Any]:
+        with self.database.transaction() as connection:
+            existing = connection.execute(
+                "SELECT id, status, input_hash, result_json FROM research_run_steps "
+                "WHERE run_id = ? AND idempotency_key = ?",
+                [run_id, idempotency_key],
+            ).fetchone()
+            if existing:
+                if existing[2] != input_hash:
+                    raise ValueError("input hash differs for idempotency key")
+                if existing[1] != SUCCEEDED:
+                    raise IllegalTransition(f"step is already {existing[1]}")
+                return _json_object(existing[3]) or {}
+
+            step_id = str(uuid4())
+            connection.execute(
+                "INSERT INTO research_run_steps "
+                "(id, run_id, step_name, status, idempotency_key, input_hash, started_at) "
+                "VALUES (?, ?, 'save_note', 'running', ?, ?, CURRENT_TIMESTAMP)",
+                [step_id, run_id, idempotency_key, input_hash],
+            )
+            note_id = str(uuid4())
+            connection.execute(
+                "INSERT INTO research_notes (id, run_id, title, body) VALUES (?, ?, ?, ?)",
+                [note_id, run_id, title, body],
+            )
+            for citation_id in citation_ids:
+                connection.execute(
+                    "UPDATE citations SET note_id = ? WHERE id = ?", [note_id, citation_id]
+                )
+            result = {"note_id": note_id, "citation_ids": citation_ids}
+            connection.execute(
+                "UPDATE research_run_steps SET status = 'succeeded', result_json = ?, "
+                "completed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                [json.dumps(result), step_id],
+            )
+            return result
 
     def start_step(
         self, run_id: str, step_name: str, idempotency_key: str, input_hash: str
