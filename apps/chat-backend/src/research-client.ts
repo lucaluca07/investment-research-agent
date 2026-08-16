@@ -53,8 +53,8 @@ export class ResearchClient {
     this.requestFetch = options.fetch ?? globalThis.fetch;
   }
 
-  async createRun(request: { chat_id: string; pi_session_id: string; model: string }): Promise<ResearchRun> {
-    return this.post("v1/research-runs", request) as Promise<ResearchRun>;
+  async createRun(request: { chat_id: string; pi_session_id: string; model: string; idempotency_key: string }): Promise<ResearchRun> {
+    return parseRun(await this.post("v1/research-runs", request));
   }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
@@ -66,17 +66,17 @@ export class ResearchClient {
   }
 
   async getChatHistory(chat_id: string): Promise<ChatHistory> {
-    return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/messages`) as Promise<ChatHistory>;
+    const value = await this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/messages`); if (!isObject(value) || !Array.isArray(value.messages)) throw new ResearchClientError("invalid chat history response", 200, value); return value as unknown as ChatHistory;
   }
 
   async createChat(chat_id?: string): Promise<Chat> {
-    return this.post("v1/chats", chat_id ? { chat_id } : {}) as Promise<Chat>;
+    return parseChat(await this.post("v1/chats", chat_id ? { chat_id } : {}));
   }
 
   async listChats(): Promise<Chat[]> { return this.request("GET", "v1/chats") as unknown as Promise<Chat[]>; }
   async getChat(chat_id: string): Promise<Chat> { return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}`) as Promise<Chat>; }
-  async listEvents(chat_id: string, afterId = 0): Promise<PersistedChatEvent[]> { return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/events?after=${afterId}`) as unknown as Promise<PersistedChatEvent[]>; }
-  async appendEvent(chat_id: string, event: { type: string; data: Record<string, unknown> }): Promise<PersistedChatEvent> { return this.post(`v1/chats/${encodeURIComponent(chat_id)}/events`, event) as Promise<PersistedChatEvent>; }
+  async listEvents(chat_id: string, afterId = 0): Promise<PersistedChatEvent[]> { const value = await this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/events?after=${afterId}`); if (!Array.isArray(value)) throw new ResearchClientError("invalid events response", 200, value); return value.map(parseEvent); }
+  async appendEvent(chat_id: string, event: { type: string; data: Record<string, unknown> }): Promise<PersistedChatEvent> { return parseEvent(await this.post(`v1/chats/${encodeURIComponent(chat_id)}/events`, event)); }
   async updateRun(run_id: string, status: ResearchRun["status"], error?: Record<string, unknown>): Promise<void> {
     await this.request("PATCH", `v1/research-runs/${encodeURIComponent(run_id)}`, { status, error });
   }
@@ -85,11 +85,11 @@ export class ResearchClient {
     return this.post(`v1/chats/${encodeURIComponent(chat_id)}/messages`, request) as Promise<ChatMessage>;
   }
 
-  private async post(path: string, body: unknown): Promise<Record<string, unknown>> {
+  private async post(path: string, body: unknown): Promise<unknown> {
     return this.request("POST", path, body);
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<Record<string, unknown>> {
+  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const response = await this.requestFetch(new URL(path, this.baseUrl), {
       method,
       headers: { "content-type": "application/json" },
@@ -111,3 +111,8 @@ export class ResearchClient {
     return payload as Record<string, unknown>;
   }
 }
+
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+function parseChat(value: unknown): Chat { if (!isObject(value) || typeof value.id !== "string" || typeof value.pi_session_id !== "string") throw new ResearchClientError("invalid chat response", 200, value); return value as unknown as Chat; }
+function parseRun(value: unknown): ResearchRun { if (!isObject(value) || typeof value.id !== "string" || typeof value.chat_id !== "string" || typeof value.status !== "string") throw new ResearchClientError("invalid run response", 200, value); return value as unknown as ResearchRun; }
+function parseEvent(value: unknown): PersistedChatEvent { if (!isObject(value) || typeof value.id !== "number" || typeof value.type !== "string" || !isObject(value.data)) throw new ResearchClientError("invalid event response", 200, value); return value as unknown as PersistedChatEvent; }

@@ -30,10 +30,12 @@ CREATE TABLE IF NOT EXISTS research_runs (
   chat_id VARCHAR NOT NULL,
   pi_session_id VARCHAR NOT NULL,
   model VARCHAR NOT NULL,
+  idempotency_key VARCHAR,
   status VARCHAR NOT NULL DEFAULT 'running' CHECK (status IN ('running','succeeded','failed','cancelled')),
   error_json JSON,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (chat_id) REFERENCES chats(id)
+  , UNIQUE(chat_id, idempotency_key)
 );
 
 CREATE TABLE IF NOT EXISTS research_run_steps (

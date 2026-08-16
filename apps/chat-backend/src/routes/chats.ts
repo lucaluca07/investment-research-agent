@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ResearchClient } from "../research-client.js";
+import { ResearchClientError, type ResearchClient } from "../research-client.js";
 import { ChatRegistry } from "../chat-registry.js";
 import { randomUUID } from "node:crypto";
 
@@ -30,6 +30,7 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
       return reply.code(result.status === "accepted" ? 202 : 200).send(result);
     } catch (error) {
       if (error instanceof Error && error.message === "chat already has an active run") return reply.code(409).send({ detail: error.message });
+      if (error instanceof ResearchClientError) return reply.code(error.status).send({ detail: error.message });
       throw error;
     }
   });

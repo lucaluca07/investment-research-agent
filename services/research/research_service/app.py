@@ -45,6 +45,7 @@ class RunRequest(RequestModel):
     chat_id: str
     pi_session_id: str
     model: str
+    idempotency_key: str | None = None
 
 
 class RunStatusRequest(RequestModel):
@@ -190,7 +191,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
     @app.post("/v1/research-runs", status_code=status.HTTP_201_CREATED)
     def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:
         try:
-            run = store(request).create_run(payload.chat_id, payload.pi_session_id, payload.model)
+            run = store(request).create_run(payload.chat_id, payload.pi_session_id, payload.model, payload.idempotency_key)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="chat not found") from exc
         except ValueError as exc:

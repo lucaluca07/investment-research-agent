@@ -24,16 +24,19 @@ class RunStore:
     def __init__(self, database: Database) -> None:
         self.database = database
 
-    def create_run(self, chat_id: str, pi_session_id: str, model: str) -> ResearchRun:
+    def create_run(self, chat_id: str, pi_session_id: str, model: str, idempotency_key: str | None = None) -> ResearchRun:
         run_id = str(uuid4())
+        idempotency_key = idempotency_key or run_id
         with self.database.transaction() as connection:
             self._require_chat(connection, chat_id)
+            existing = connection.execute("SELECT id, chat_id, pi_session_id, model, created_at, status, error_json FROM research_runs WHERE chat_id = ? AND idempotency_key = ?", [chat_id, idempotency_key]).fetchone()
+            if existing:
+                return ResearchRun(existing[0], existing[1], existing[2], existing[3], existing[4], existing[5], _json_object(existing[6]))
             if connection.execute("SELECT 1 FROM research_runs WHERE chat_id = ? AND status = 'running' LIMIT 1", [chat_id]).fetchone():
                 raise IllegalTransition("chat already has an active run")
             created_at = connection.execute(
-                "INSERT INTO research_runs (id, chat_id, pi_session_id, model) "
-                "VALUES (?, ?, ?, ?) RETURNING created_at",
-                [run_id, chat_id, pi_session_id, model],
+                "INSERT INTO research_runs (id, chat_id, pi_session_id, model, idempotency_key) VALUES (?, ?, ?, ?, ?) RETURNING created_at",
+                [run_id, chat_id, pi_session_id, model, idempotency_key],
             ).fetchone()[0]
         return ResearchRun(run_id, chat_id, pi_session_id, model, created_at)
 

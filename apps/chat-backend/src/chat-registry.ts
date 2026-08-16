@@ -6,6 +6,7 @@ type SessionLike = {
   prompt(text: string): Promise<void>;
   subscribe(listener: (event: unknown) => void): () => void;
   dispose(): void;
+  abort?(): Promise<void> | void;
 };
 
 type ChatState = {
@@ -19,6 +20,7 @@ type ChatState = {
   idempotency: Map<string, { runId: string }>;
   assistantText: Map<string, string>;
   queue: Promise<void>;
+  generation: number;
 };
 
 export class ChatRegistry {
@@ -32,12 +34,15 @@ export class ChatRegistry {
 
   addChat(chatId: string): void {
     if (!this.chats.has(chatId)) {
-      this.chats.set(chatId, { sessionId: chatId, nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map(), queue: Promise.resolve() });
+      this.chats.set(chatId, { sessionId: chatId, nextEventId: 1, events: [], subscribers: new Set(), idempotency: new Map(), assistantText: new Map(), queue: Promise.resolve(), generation: 0 });
     }
   }
 
   async restore(): Promise<void> {
-    for (const chat of await this.researchClient.listChats()) this.addChat(chat.id);
+    for (const chat of await this.researchClient.listChats()) {
+      this.addChat(chat.id);
+      this.chats.get(chat.id)!.sessionId = chat.pi_session_id;
+    }
   }
 
   hasChat(chatId: string): boolean {
@@ -67,14 +72,19 @@ export class ChatRegistry {
     state.queue = previousQueue.then(async () => {
       if (state.activeRunId) throw new Error("chat already has an active run");
       const session = await this.getSession(chatId, state);
-      await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
-      const run = await this.researchClient.createRun({ chat_id: chatId, pi_session_id: state.sessionId, model: process.env.IRA_PI_MODEL ?? "configured-model" });
+      const run = await this.researchClient.createRun({ chat_id: chatId, pi_session_id: state.sessionId, model: process.env.IRA_PI_MODEL ?? "configured-model", idempotency_key: idempotencyKey });
       const runId = String(run.id);
+      if (run.status === "succeeded" || run.status === "cancelled") {
+        result = { status: "replayed", runId };
+        return;
+      }
+      await this.researchClient.appendMessage(chatId, { role: "user", content, idempotency_key: idempotencyKey });
+      const generation = state.generation;
       state.activeRunId = runId;
       state.idempotency.set(idempotencyKey, { runId });
-      this.emit(chatId, "run.started", { run_id: runId });
+      await this.emit(chatId, "run.started", { run_id: runId });
       state.assistantText.set(runId, "");
-      void this.runPrompt(chatId, state, session, content, runId);
+      void this.runPrompt(chatId, state, session, content, runId, generation);
       result = { status: "accepted", runId };
     }).finally(resolve);
     await previousQueue;
@@ -86,25 +96,27 @@ export class ChatRegistry {
     const state = this.requireChat(chatId);
     const runId = state.activeRunId;
     if (!runId) throw new Error("chat has no active run");
+    state.generation += 1;
+    await state.session?.abort?.();
     if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "cancelled");
     state.activeRunId = undefined;
-    this.emit(chatId, "run.cancelled", { run_id: runId });
+    await this.emit(chatId, "run.cancelled", { run_id: runId });
     return { runId };
   }
 
-  private async runPrompt(chatId: string, state: ChatState, session: SessionLike, content: string, runId: string) {
+  private async runPrompt(chatId: string, state: ChatState, session: SessionLike, content: string, runId: string, generation: number) {
     try {
       await session.prompt(content);
-      if (state.activeRunId === runId) {
+      if (state.activeRunId === runId && state.generation === generation) {
         const content = state.assistantText.get(runId) ?? "";
         if (content) await this.researchClient.appendMessage(chatId, { role: "assistant", content });
-        this.emit(chatId, "message.completed", { run_id: runId, content });
-        this.emit(chatId, "run.completed", { run_id: runId });
+        await this.emit(chatId, "message.completed", { run_id: runId, content });
+        await this.emit(chatId, "run.completed", { run_id: runId });
         if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "succeeded");
       }
     } catch (error) {
-      if (typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
-      this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
+      if (state.generation === generation && typeof this.researchClient.updateRun === "function") await this.researchClient.updateRun(runId, "failed", { retryable: true });
+      await this.emit(chatId, "run.failed", { run_id: runId, message: "research run failed" });
     } finally {
       if (state.activeRunId === runId) state.activeRunId = undefined;
     }
@@ -131,13 +143,14 @@ export class ChatRegistry {
     }
   }
 
-  private emit(chatId: string, type: string, data: Record<string, unknown>): void {
+  private async emit(chatId: string, type: string, data: Record<string, unknown>): Promise<void> {
     const state = this.requireChat(chatId);
-    const event = { id: state.nextEventId++, type, data };
+    const persisted = typeof this.researchClient.appendEvent === "function" ? await this.researchClient.appendEvent(chatId, { type, data }) : { id: state.nextEventId++, type, data };
+    const event = { id: persisted.id, type: persisted.type, data: persisted.data };
+    state.nextEventId = Math.max(state.nextEventId, event.id + 1);
     state.events.push(event);
     if (state.events.length > 1000) state.events.shift();
     for (const subscriber of state.subscribers) subscriber(event);
-    if (typeof this.researchClient.appendEvent === "function") void this.researchClient.appendEvent(chatId, { type, data }).catch(() => undefined);
   }
 
   private requireChat(chatId: string): ChatState {
