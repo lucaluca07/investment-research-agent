@@ -15,6 +15,16 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   , UNIQUE(chat_id, idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS chat_events (
+  chat_id VARCHAR NOT NULL,
+  event_id BIGINT NOT NULL,
+  event_type VARCHAR NOT NULL,
+  data_json JSON NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (chat_id, event_id),
+  FOREIGN KEY (chat_id) REFERENCES chats(id)
+);
+
 CREATE TABLE IF NOT EXISTS research_runs (
   id VARCHAR PRIMARY KEY,
   chat_id VARCHAR NOT NULL,

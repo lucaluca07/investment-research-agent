@@ -49,6 +49,19 @@ class RunStore:
             rows = connection.execute("SELECT id, pi_session_id FROM chats ORDER BY created_at, id").fetchall()
         return [{"id": row[0], "pi_session_id": row[1]} for row in rows]
 
+    def append_event(self, chat_id: str, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+        with self.database.transaction() as connection:
+            self._require_chat(connection, chat_id)
+            event_id = connection.execute("SELECT COALESCE(MAX(event_id), 0) + 1 FROM chat_events WHERE chat_id = ?", [chat_id]).fetchone()[0]
+            connection.execute("INSERT INTO chat_events (chat_id, event_id, event_type, data_json) VALUES (?, ?, ?, ?)", [chat_id, event_id, event_type, json.dumps(data)])
+        return {"id": event_id, "type": event_type, "data": data}
+
+    def list_events(self, chat_id: str, after_id: int = 0) -> list[dict[str, Any]]:
+        with self.database.read() as connection:
+            self._require_chat(connection, chat_id)
+            rows = connection.execute("SELECT event_id, event_type, data_json FROM chat_events WHERE chat_id = ? AND event_id > ? ORDER BY event_id", [chat_id, after_id]).fetchall()
+        return [{"id": row[0], "type": row[1], "data": _json_object(row[2]) or {}} for row in rows]
+
     def update_run(self, run_id: str, status: str, error: dict[str, Any] | None = None) -> None:
         if status not in {"running", "succeeded", "failed", "cancelled"}:
             raise ValueError("invalid run status")

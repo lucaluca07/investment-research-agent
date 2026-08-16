@@ -48,7 +48,7 @@ export async function registerChatRoutes(app: FastifyInstance, client: ResearchC
     reply.hijack();
     reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const write = (event: { id: number; type: string; data: Record<string, unknown> }) => reply.raw.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
-    for (const event of registry.getEvents(chatId, Number.isFinite(last) ? last : undefined)) write(event);
+    for (const event of await client.listEvents(chatId, Number.isFinite(last) ? last : 0)) write(event);
     const unsubscribe = registry.subscribe(chatId, write);
     const heartbeat = setInterval(() => reply.raw.write(": heartbeat\n\n"), 15000);
     request.raw.on("close", () => { clearInterval(heartbeat); unsubscribe(); });

@@ -1,11 +1,24 @@
 import json
 from importlib.resources import files
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from research_service.app import create_app
+
+
+def test_chat_events_replay_after_service_restart(tmp_path: Path) -> None:
+    database_path = str(tmp_path / "events.duckdb")
+    with TestClient(create_app(database_path=database_path)) as client:
+        chat = client.post("/v1/chats", json={"chat_id": "chat-events"}).json()
+        assert client.post(f"/v1/chats/{chat['id']}/events", json={"type": "message_delta", "data": {"delta": "hi"}}).json()["id"] == 1
+        client.post(f"/v1/chats/{chat['id']}/events", json={"type": "message_completed", "data": {"content": "hi"}})
+    with TestClient(create_app(database_path=database_path)) as client:
+        replay = client.get("/v1/chats/chat-events/events?after=1")
+        assert replay.status_code == 200
+        assert [event["type"] for event in replay.json()] == ["message_completed"]
 
 
 @pytest.fixture

@@ -52,6 +52,11 @@ class RunStatusRequest(RequestModel):
     error: dict[str, Any] | None = None
 
 
+class EventRequest(RequestModel):
+    type: str
+    data: dict[str, Any]
+
+
 class SnapshotRequest(RequestModel):
     ticker: str
 
@@ -156,6 +161,20 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
              "content": message.content, "created_at": message.created_at}
             for message in messages
         ]}
+
+    @app.post("/v1/chats/{chat_id}/events")
+    def append_event(chat_id: str, payload: EventRequest, request: Request) -> dict[str, Any]:
+        try:
+            return store(request).append_event(chat_id, payload.type, payload.data)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
+
+    @app.get("/v1/chats/{chat_id}/events")
+    def list_events(chat_id: str, request: Request, after: int = 0) -> list[dict[str, Any]]:
+        try:
+            return store(request).list_events(chat_id, after)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="chat not found") from exc
 
     @app.post("/v1/chats/{chat_id}/messages", status_code=status.HTTP_201_CREATED)
     def append_message(chat_id: str, payload: MessageRequest, request: Request) -> dict[str, Any]:

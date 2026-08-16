@@ -22,6 +22,7 @@ export type Chat = { id: string; pi_session_id: string };
 export type ChatMessage = { id: string; chat_id: string; role: "user" | "assistant" | "tool"; content: string; created_at: string };
 export type ChatHistory = { messages: ChatMessage[] };
 export type ResearchRun = { id: string; chat_id: string; pi_session_id: string; model: string; status: "running" | "succeeded" | "failed" | "cancelled"; error: Record<string, unknown> | null; created_at: string };
+export type PersistedChatEvent = { id: number; type: string; data: Record<string, unknown> };
 
 export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
@@ -74,6 +75,8 @@ export class ResearchClient {
 
   async listChats(): Promise<Chat[]> { return this.request("GET", "v1/chats") as unknown as Promise<Chat[]>; }
   async getChat(chat_id: string): Promise<Chat> { return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}`) as Promise<Chat>; }
+  async listEvents(chat_id: string, afterId = 0): Promise<PersistedChatEvent[]> { return this.request("GET", `v1/chats/${encodeURIComponent(chat_id)}/events?after=${afterId}`) as unknown as Promise<PersistedChatEvent[]>; }
+  async appendEvent(chat_id: string, event: { type: string; data: Record<string, unknown> }): Promise<PersistedChatEvent> { return this.post(`v1/chats/${encodeURIComponent(chat_id)}/events`, event) as Promise<PersistedChatEvent>; }
   async updateRun(run_id: string, status: ResearchRun["status"], error?: Record<string, unknown>): Promise<void> {
     await this.request("PATCH", `v1/research-runs/${encodeURIComponent(run_id)}`, { status, error });
   }

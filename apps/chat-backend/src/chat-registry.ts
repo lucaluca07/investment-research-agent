@@ -137,6 +137,7 @@ export class ChatRegistry {
     state.events.push(event);
     if (state.events.length > 1000) state.events.shift();
     for (const subscriber of state.subscribers) subscriber(event);
+    if (typeof this.researchClient.appendEvent === "function") void this.researchClient.appendEvent(chatId, { type, data }).catch(() => undefined);
   }
 
   private requireChat(chatId: string): ChatState {
