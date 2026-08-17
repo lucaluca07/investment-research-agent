@@ -161,7 +161,7 @@ export class ChatRegistry {
     if (value.type === "message_update" && value.assistantMessageEvent?.type === "text_delta") {
       const delta = value.assistantMessageEvent.delta ?? "";
       if (state.activeRunId) state.assistantText.set(state.activeRunId, (state.assistantText.get(state.activeRunId) ?? "") + delta);
-      this.enqueueEmit(chatId, "message.delta", { delta });
+      this.enqueueEmit(chatId, "message.delta", { run_id: eventRunId, delta });
     } else if (value.type === "tool_execution_start") {
       this.enqueueEmit(chatId, "tool.started", { tool_name: value.toolName ?? "research_tool" });
     } else if (value.type === "tool_execution_end") {
