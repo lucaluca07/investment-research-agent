@@ -29,6 +29,7 @@ export type AguiEvent = { thread_id: string; sequence: number; run_id: string; t
 export type CreateRunRequest = { input: unknown; idempotency_key: string; model?: string };
 export type CreateRunResult = { run: AguiRun; replayed: boolean; last_event_seq: number };
 export type ThreadState = { thread: AguiThread; last_event_seq: number; runs: AguiRun[] };
+export type InterruptDecision = { interrupt_id: string; run_id: string; operation_id: string; checkpoint_id: string; receipt_id: string; status: string; payload: { approved: boolean } };
 
 export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
@@ -69,6 +70,8 @@ export class ResearchClient {
   async listAguiEvents(thread_id: string, after = 0): Promise<AguiEvent[]> { const v=await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/events?after=${after}`); if(!Array.isArray(v)) throw new ResearchClientError("invalid AG-UI events response",200,v); return validateSequences(v.map(parseAguiEvent)); }
   async getAguiState(thread_id: string): Promise<ThreadState> { return parseThreadState(await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/state`)); }
   async transitionAguiRun(run_id: string, status: AguiRun["status"], error?: Record<string, unknown>, emit_event = true): Promise<AguiRun> { return parseAguiRun(await this.post(`v1/runs/${encodeURIComponent(run_id)}/transition`, { status, error, emit_event })); }
+  async requestInterrupt(input: { thread_id: string; interrupt_id: string; run_id: string; nonce: string; tool_name?: string; input?: unknown; last_event_seq?: number }): Promise<Record<string, unknown>> { return this.post("v1/internal/interrupts", input) as Promise<Record<string, unknown>>; }
+  async resolveInterrupt(thread_id: string, interrupt_id: string, input: { nonce: string; status: "resolved" | "cancelled"; payload: { approved: boolean }; payload_hash?: string }): Promise<InterruptDecision> { return parseInterrupt(await this.post(`v1/internal/interrupts/${encodeURIComponent(thread_id)}/${encodeURIComponent(interrupt_id)}/resolve`, input)); }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
     return this.post("v1/tools/query-company-snapshot", { ticker }) as Promise<CompanySnapshot>;
@@ -136,3 +139,4 @@ function parseThread(value: unknown): AguiThread { if(!isObject(value)||typeof v
 function parseAguiRun(value: unknown): AguiRun { const s=["pending","running","completed","interrupted","failed","cancelled"]; if(!isObject(value)||typeof value.id!=="string"||typeof value.thread_id!=="string"||typeof value.idempotency_key!=="string"||!s.includes(String(value.status))||(value.model!==null&&typeof value.model!=="string")) throw new ResearchClientError("invalid AG-UI run response",200,value); return value as unknown as AguiRun; }
 function parseAguiEvent(value: unknown): AguiEvent { if(!isObject(value)||typeof value.thread_id!=="string"||typeof value.sequence!=="number"||!Number.isInteger(value.sequence)||value.sequence<0||typeof value.run_id!=="string"||typeof value.type!=="string"||value.type.length===0||!isObject(value.data)) throw new ResearchClientError("invalid AG-UI event response",200,value); return value as unknown as AguiEvent; }
 function validateSequences(events: AguiEvent[]): AguiEvent[] { for(let i=1;i<events.length;i++) if(events[i].sequence!==events[i-1].sequence+1) throw new ResearchClientError("non-contiguous AG-UI event sequence",200,events); return events; }
+function parseInterrupt(value: unknown): InterruptDecision { if(!isObject(value)||typeof value.interrupt_id!=="string"||typeof value.run_id!=="string"||typeof value.operation_id!=="string"||typeof value.checkpoint_id!=="string"||typeof value.receipt_id!=="string"||!isObject(value.payload)||typeof value.payload.approved!=="boolean") throw new ResearchClientError("invalid interrupt response",200,value); return value as unknown as InterruptDecision; }

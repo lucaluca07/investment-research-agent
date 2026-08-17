@@ -11,6 +11,7 @@ from .agui_store import AguiStore
 from .db import Database
 from .runs import CitationOwnershipConflict, IllegalTransition, RunStore
 from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixture_citations
+from .interrupts import InterruptStore, InterruptError, InterruptConflict, InterruptNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -71,17 +72,36 @@ class NoteRequest(RequestModel):
     citation_ids: list[str] = Field(min_length=1)
 
 
+class InterruptRequest(RequestModel):
+    thread_id: str = Field(min_length=1)
+    interrupt_id: str = Field(min_length=1)
+    run_id: str = Field(min_length=1)
+    nonce: str = Field(min_length=1)
+    tool_name: str = ""
+    input: Any = Field(default_factory=dict)
+    last_event_seq: int | None = Field(default=None, ge=1)
+
+
+class ResolveInterruptRequest(RequestModel):
+    nonce: str = Field(min_length=1)
+    status: Literal["resolved", "cancelled"]
+    payload: dict[str, Any]
+    payload_hash: str | None = None
+
+
 def create_app(database_path: str = ":memory:", test_mode: bool = False) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         database = Database(database_path)
         run_store = RunStore(database)
         agui_store = AguiStore(database)
+        interrupt_store = InterruptStore(database)
         seed_fixture_citations(run_store)
         run_store.recover_incomplete_runs()
         app.state.database = database
         app.state.run_store = run_store
         app.state.agui_store = agui_store
+        app.state.interrupt_store = interrupt_store
         try:
             yield
         finally:
@@ -94,6 +114,29 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
 
     def agui(request: Request) -> AguiStore:
         return request.app.state.agui_store
+
+    def interrupts(request: Request) -> InterruptStore:
+        return request.app.state.interrupt_store
+
+    @app.post("/v1/internal/interrupts")
+    def request_interrupt(payload: InterruptRequest, request: Request) -> dict[str, Any]:
+        try:
+            return interrupts(request).request_interrupt(
+                payload.thread_id, payload.interrupt_id, run_id=payload.run_id,
+                nonce=payload.nonce, tool_name=payload.tool_name,
+                input_value=payload.input, last_event_seq=payload.last_event_seq,
+            )
+        except KeyError as exc: raise HTTPException(status_code=422, detail=f"missing field: {exc.args[0]}") from exc
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.post("/v1/internal/interrupts/{thread_id}/{interrupt_id}/resolve")
+    def resolve_interrupt(thread_id: str, interrupt_id: str, payload: ResolveInterruptRequest, request: Request) -> dict[str, Any]:
+        try:
+            return interrupts(request).resolve_interrupt(thread_id, interrupt_id, payload.nonce, payload.status, payload.payload, payload.payload_hash)
+        except KeyError as exc: raise HTTPException(status_code=422, detail=f"missing field: {exc.args[0]}") from exc
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @app.post("/v1/threads", status_code=status.HTTP_201_CREATED)
     def create_thread(payload: dict[str, Any], request: Request) -> dict[str, Any]:
