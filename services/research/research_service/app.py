@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
+from .agui_store import AguiStore
 from .db import Database
 from .runs import CitationOwnershipConflict, IllegalTransition, RunStore
 from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixture_citations
@@ -75,10 +76,12 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
     async def lifespan(app: FastAPI):
         database = Database(database_path)
         run_store = RunStore(database)
+        agui_store = AguiStore(database)
         seed_fixture_citations(run_store)
         run_store.recover_incomplete_runs()
         app.state.database = database
         app.state.run_store = run_store
+        app.state.agui_store = agui_store
         try:
             yield
         finally:
@@ -88,6 +91,44 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
 
     def store(request: Request) -> RunStore:
         return request.app.state.run_store
+
+    def agui(request: Request) -> AguiStore:
+        return request.app.state.agui_store
+
+    @app.post("/v1/threads", status_code=status.HTTP_201_CREATED)
+    def create_thread(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        return agui(request).create_thread(payload.get("id"), payload.get("title", ""))
+
+    @app.get("/v1/threads")
+    def list_threads(request: Request) -> list[dict[str, Any]]:
+        return agui(request).list_threads()
+
+    @app.post("/v1/threads/{thread_id}/runs", status_code=status.HTTP_201_CREATED)
+    def create_agui_run(thread_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        try:
+            return agui(request).create_run(thread_id, payload.get("idempotency_key", str(uuid4())), payload.get("input", payload), payload.get("model"))
+        except KeyError as exc: raise HTTPException(status_code=404, detail="thread not found") from exc
+        except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/threads/{thread_id}/events:batch")
+    def append_agui_events(thread_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        try: return {"events": agui(request).append_events(thread_id, payload["run_id"], payload.get("events", []))}
+        except KeyError as exc: raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/v1/threads/{thread_id}/events")
+    def list_agui_events(thread_id: str, request: Request, after: int = 0) -> list[dict[str, Any]]:
+        return agui(request).list_events(thread_id, after)
+
+    @app.get("/v1/threads/{thread_id}/state")
+    def get_agui_state(thread_id: str, request: Request) -> dict[str, Any]:
+        try: return agui(request).get_state(thread_id)
+        except KeyError as exc: raise HTTPException(status_code=404, detail="thread not found") from exc
+
+    @app.post("/v1/runs/{run_id}/transition")
+    def transition_agui_run(run_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        try: return agui(request).transition_run(run_id, payload["status"], payload.get("error"))
+        except KeyError as exc: raise HTTPException(status_code=404, detail="run not found") from exc
+        except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/tools/query-company-snapshot")
     def query_snapshot(payload: SnapshotRequest) -> dict[str, Any]:

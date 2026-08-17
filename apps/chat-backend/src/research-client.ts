@@ -23,6 +23,12 @@ export type ChatMessage = { id: string; chat_id: string; role: "user" | "assista
 export type ChatHistory = { messages: ChatMessage[] };
 export type ResearchRun = { id: string; chat_id: string; pi_session_id: string; model: string; status: "running" | "succeeded" | "failed" | "cancelled"; error: Record<string, unknown> | null; created_at: string; replayed?: boolean };
 export type PersistedChatEvent = { id: number; type: string; data: Record<string, unknown> };
+export type AguiThread = { id: string; title: string; title_source: string; title_locked: boolean; created_at: string };
+export type AguiRun = { id: string; thread_id: string; idempotency_key: string; status: "pending"|"running"|"completed"|"interrupted"|"failed"|"cancelled"; model: string|null; replayed?: boolean };
+export type AguiEvent = { thread_id: string; sequence: number; run_id: string; type: string; data: Record<string, unknown> };
+export type CreateRunRequest = { input: unknown; idempotency_key: string; model?: string };
+export type CreateRunResult = { run: AguiRun; replayed: boolean; last_event_seq: number };
+export type ThreadState = { thread: AguiThread; last_event_seq: number; runs: AguiRun[] };
 
 export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
@@ -56,6 +62,13 @@ export class ResearchClient {
   async createRun(request: { chat_id: string; pi_session_id: string; model: string; idempotency_key: string }): Promise<ResearchRun> {
     return parseRun(await this.post("v1/research-runs", request));
   }
+  async createThread(title = "", id?: string): Promise<AguiThread> { return parseThread(await this.post("v1/threads", { ...(id ? { id } : {}), title })); }
+  async listThreads(): Promise<AguiThread[]> { const v=await this.request("GET", "v1/threads"); if(!Array.isArray(v)) throw new ResearchClientError("invalid threads response",200,v); return v.map(parseThread); }
+  async createAguiRun(thread_id: string, input: unknown, idempotency_key: string, model?: string): Promise<CreateRunResult> { return parseCreateRunResult(await this.post(`v1/threads/${encodeURIComponent(thread_id)}/runs`, { input, idempotency_key, model })); }
+  async appendAguiEvents(thread_id: string, run_id: string, events: Array<{ type: string; data: Record<string, unknown> }>): Promise<{ events: AguiEvent[] }> { const v=await this.post(`v1/threads/${encodeURIComponent(thread_id)}/events:batch`, { run_id, events }); if(!isObject(v)||!Array.isArray(v.events)) throw new ResearchClientError("invalid AG-UI events response",200,v); return {events: validateSequences(v.events.map(parseAguiEvent))}; }
+  async listAguiEvents(thread_id: string, after = 0): Promise<AguiEvent[]> { const v=await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/events?after=${after}`); if(!Array.isArray(v)) throw new ResearchClientError("invalid AG-UI events response",200,v); return validateSequences(v.map(parseAguiEvent)); }
+  async getAguiState(thread_id: string): Promise<ThreadState> { return parseThreadState(await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/state`)); }
+  async transitionAguiRun(run_id: string, status: AguiRun["status"], error?: Record<string, unknown>): Promise<AguiRun> { return parseAguiRun(await this.post(`v1/runs/${encodeURIComponent(run_id)}/transition`, { status, error })); }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
     return this.post("v1/tools/query-company-snapshot", { ticker }) as Promise<CompanySnapshot>;
@@ -117,3 +130,9 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 function parseChat(value: unknown): Chat { if (!isObject(value) || typeof value.id !== "string" || typeof value.pi_session_id !== "string") throw new ResearchClientError("invalid chat response", 200, value); return value as unknown as Chat; }
 function parseRun(value: unknown): ResearchRun { const statuses = ["running", "succeeded", "failed", "cancelled"]; if (!isObject(value) || typeof value.id !== "string" || typeof value.chat_id !== "string" || typeof value.pi_session_id !== "string" || typeof value.model !== "string" || typeof value.created_at !== "string" || !statuses.includes(String(value.status)) || !("error" in value) || (value.error !== null && !isObject(value.error))) throw new ResearchClientError("invalid run response", 200, value); return value as unknown as ResearchRun; }
 function parseEvent(value: unknown): PersistedChatEvent { if (!isObject(value) || typeof value.id !== "number" || typeof value.type !== "string" || !isObject(value.data)) throw new ResearchClientError("invalid event response", 200, value); return value as unknown as PersistedChatEvent; }
+function parseCreateRunResult(value: unknown): CreateRunResult { if (!isObject(value) || typeof value.replayed !== "boolean" || typeof value.last_event_seq !== "number" || !Number.isInteger(value.last_event_seq) || value.last_event_seq < 0) throw new ResearchClientError("invalid AG-UI run response", 200, value); return {run:parseAguiRun(value.run), replayed:value.replayed, last_event_seq:value.last_event_seq}; }
+function parseThreadState(value: unknown): ThreadState { if (!isObject(value) || typeof value.last_event_seq !== "number" || !Number.isInteger(value.last_event_seq) || value.last_event_seq < 0 || !Array.isArray(value.runs)) throw new ResearchClientError("invalid AG-UI state response", 200, value); return {thread:parseThread(value.thread),last_event_seq:value.last_event_seq,runs:value.runs.map(parseAguiRun)}; }
+function parseThread(value: unknown): AguiThread { if(!isObject(value)||typeof value.id!=="string"||typeof value.title!=="string"||typeof value.title_source!=="string"||typeof value.title_locked!=="boolean"||typeof value.created_at!=="string") throw new ResearchClientError("invalid thread response",200,value); return value as unknown as AguiThread; }
+function parseAguiRun(value: unknown): AguiRun { const s=["pending","running","completed","interrupted","failed","cancelled"]; if(!isObject(value)||typeof value.id!=="string"||typeof value.thread_id!=="string"||typeof value.idempotency_key!=="string"||!s.includes(String(value.status))||(value.model!==null&&typeof value.model!=="string")) throw new ResearchClientError("invalid AG-UI run response",200,value); return value as unknown as AguiRun; }
+function parseAguiEvent(value: unknown): AguiEvent { if(!isObject(value)||typeof value.thread_id!=="string"||typeof value.sequence!=="number"||!Number.isInteger(value.sequence)||value.sequence<0||typeof value.run_id!=="string"||typeof value.type!=="string"||value.type.length===0||!isObject(value.data)) throw new ResearchClientError("invalid AG-UI event response",200,value); return value as unknown as AguiEvent; }
+function validateSequences(events: AguiEvent[]): AguiEvent[] { for(let i=1;i<events.length;i++) if(events[i].sequence!==events[i-1].sequence+1) throw new ResearchClientError("non-contiguous AG-UI event sequence",200,events); return events; }
