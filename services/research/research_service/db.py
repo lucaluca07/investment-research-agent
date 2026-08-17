@@ -5,8 +5,8 @@ from threading import RLock
 
 import duckdb
 
-_SCHEMA_VERSION = 2
-_SCHEMA_FINGERPRINT = "agui-persistence-v2"
+_SCHEMA_VERSION = 3
+_SCHEMA_FINGERPRINT = "agui-persistence-v3"
 _REQUIRED_SCHEMA_COLUMNS = {
     "agui_schema_metadata": {"id", "schema_version", "schema_fingerprint", "created_at"},
     "threads": {"id", "title", "title_source", "title_locked", "created_at"},
@@ -34,7 +34,7 @@ _REQUIRED_SCHEMA_COLUMNS = {
     },
     "resume_receipts": {
         "id", "thread_id", "interrupt_id", "status", "payload_hash", "payload_json",
-        "tool_operation_id", "checkpoint_id", "created_at",
+        "tool_operation_id", "checkpoint_id", "decision_set_id", "created_at",
     },
 }
 

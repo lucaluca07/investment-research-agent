@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS agui_schema_metadata (
 );
 
 INSERT INTO agui_schema_metadata (id, schema_version, schema_fingerprint)
-VALUES (1, 2, 'agui-persistence-v2')
+VALUES (1, 3, 'agui-persistence-v3')
 ON CONFLICT (id) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS threads (
@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS resume_receipts (
   payload_json JSON NOT NULL,
   tool_operation_id VARCHAR,
   checkpoint_id VARCHAR,
+  decision_set_id VARCHAR,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (thread_id) REFERENCES threads(id),
   FOREIGN KEY (tool_operation_id, thread_id) REFERENCES tool_operations(id, thread_id),

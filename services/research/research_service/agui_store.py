@@ -76,17 +76,21 @@ class AguiStore:
             runs = c.execute("SELECT id,status,model,input_hash,created_at,idempotency_key FROM runs WHERE thread_id=? ORDER BY created_at", [thread_id]).fetchall()
         return {"thread": self._thread(thread), "last_event_seq": last, "runs": [self._run(r[:5], thread_id, r[5], False) for r in runs]}
 
-    def transition_run(self, run_id, status, error=None, emit_event=True):
+    def transition_run(self, run_id, status, error=None, emit_event=True, event_type=None, event_data=None):
         allowed = {"pending", "running", "completed", "interrupted", "failed", "cancelled"}
         if status not in allowed: raise ValueError("invalid run status")
         with self.database.transaction() as c:
             row = c.execute("SELECT id,thread_id,idempotency_key,status,model,input_hash,created_at FROM runs WHERE id=?", [run_id]).fetchone()
             if not row: raise KeyError(run_id)
+            terminal = {"completed", "interrupted", "failed", "cancelled"}
+            if row[3] in terminal and row[3] != status:
+                raise ValueError(f"terminal run status is immutable: {row[3]}")
             if row[3] != status:
                 c.execute("UPDATE runs SET status=?,error_json=?::JSON,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,CURRENT_TIMESTAMP) ELSE started_at END,completed_at=CASE WHEN ? IN ('completed','interrupted','failed','cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END WHERE id=?", [status, canonical_json(error) if error is not None else "null", status, status, run_id])
                 if emit_event:
-                    seq = self._next_sequence(c, row[1]); typ = "RUN_FINISHED" if status in {"completed","interrupted","failed","cancelled"} else "RUN_STARTED"
-                    c.execute("INSERT INTO agui_events(thread_id,sequence,run_id,event_type,payload_json) VALUES (?,?,?,?,?::JSON)", [row[1], seq, run_id, typ, canonical_json({"status": status, "error": error})])
+                    seq = self._next_sequence(c, row[1]); typ = event_type or ("RUN_FINISHED" if status in {"completed","interrupted","failed","cancelled"} else "RUN_STARTED")
+                    payload = event_data if event_data is not None else {"status": status, "error": error}
+                    c.execute("INSERT INTO agui_events(thread_id,sequence,run_id,event_type,payload_json) VALUES (?,?,?,?,?::JSON)", [row[1], seq, run_id, typ, canonical_json(payload)])
                 row = c.execute("SELECT id,thread_id,idempotency_key,status,model,input_hash,created_at FROM runs WHERE id=?", [run_id]).fetchone()
         return {"id": row[0], "thread_id": row[1], "idempotency_key": row[2], "status": row[3], "model": row[4], "input_hash": row[5], "created_at": row[6], "replayed": False}
 

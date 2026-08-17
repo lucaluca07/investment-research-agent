@@ -5,13 +5,13 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .agui_store import AguiStore
 from .db import Database
+from .interrupts import InterruptError, InterruptNotFound, InterruptStore
 from .runs import CitationOwnershipConflict, IllegalTransition, RunStore
 from .tools import citation_ids_exist, company_snapshot, input_hash, seed_fixture_citations
-from .interrupts import InterruptStore, InterruptError, InterruptConflict, InterruptNotFound
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,33 @@ class ResolveInterruptRequest(RequestModel):
     payload_hash: str | None = None
 
 
+class ApprovalPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approved: bool
+
+
+class InterruptDecision(RequestModel):
+    model_config = ConfigDict(extra="forbid")
+    interrupt_id: str = Field(min_length=1)
+    nonce: str = Field(min_length=1)
+    status: Literal["resolved", "cancelled"]
+    payload: ApprovalPayload
+    payload_hash: str | None = None
+
+
+class ResolveInterruptSetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decisions: list[InterruptDecision] = Field(min_length=1)
+
+    @field_validator("decisions")
+    @classmethod
+    def interrupt_ids_must_be_unique(cls, decisions: list[InterruptDecision]) -> list[InterruptDecision]:
+        ids = [decision.interrupt_id for decision in decisions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate interrupt_id")
+        return decisions
+
+
 class OperationReferenceRequest(RequestModel):
     thread_id: str = Field(min_length=1)
     operation_id: str = Field(min_length=1)
@@ -164,6 +191,14 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    @app.post("/v1/internal/interrupts/{thread_id}/resolve-set")
+    def resolve_interrupt_set(thread_id: str, payload: ResolveInterruptSetRequest, request: Request) -> dict[str, Any]:
+        try:
+            decisions = [decision.model_dump() for decision in payload.decisions]
+            return interrupts(request).resolve_interrupt_set(thread_id, decisions)
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     @app.post("/v1/internal/operations/begin")
     def begin_operation(payload: OperationReferenceRequest, request: Request) -> dict[str, Any]:
         try:
@@ -217,7 +252,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
 
     @app.post("/v1/runs/{run_id}/transition")
     def transition_agui_run(run_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        try: return agui(request).transition_run(run_id, payload["status"], payload.get("error"), payload.get("emit_event", True))
+        try: return agui(request).transition_run(run_id, payload["status"], payload.get("error"), payload.get("emit_event", True), payload.get("event_type"), payload.get("event_data"))
         except KeyError as exc: raise HTTPException(status_code=404, detail="run not found") from exc
         except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 

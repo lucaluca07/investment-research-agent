@@ -31,6 +31,38 @@ def test_transition_updates_run_and_is_idempotent():
     s = store(); s.create_thread("t1")
     run = s.create_run("t1", "k1", {}, None)["run"]
     assert s.transition_run(run["id"], "completed")["status"] == "completed"
+
+
+def test_terminal_transition_persists_custom_event_atomically():
+    s = store(); s.create_thread("t1")
+    run = s.create_run("t1", "k1", {}, None)["run"]
+    s.transition_run(run["id"], "failed", {"message": "boom"}, True, "RUN_ERROR", {"runId": run["id"], "message": "boom", "code": "recovery_failed"})
+    event = s.list_events("t1", 0)[-1]
+    assert event["type"] == "RUN_ERROR"
+    assert event["data"]["code"] == "recovery_failed"
+    before = len(s.list_events("t1", 0))
+    assert s.transition_run(run["id"], "failed", {"message": "boom"}, True, "RUN_ERROR", {"ignored": True})["status"] == "failed"
+    assert len(s.list_events("t1", 0)) == before
+    try:
+        s.transition_run(run["id"], "completed", None, True, "RUN_FINISHED", {})
+    except ValueError as error:
+        assert "terminal" in str(error)
+    else:
+        raise AssertionError("terminal run status changed")
+
+
+def test_terminal_transition_rolls_back_status_when_event_insert_fails():
+    s = store(); s.create_thread("t1")
+    run = s.create_run("t1", "k1", {}, None)["run"]
+    before = len(s.list_events("t1", 0))
+    try:
+        s.transition_run(run["id"], "completed", None, True, "RUN_FINISHED", {"bad": object()})
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("non-JSON terminal event was accepted")
+    assert s.get_state("t1")["runs"][0]["status"] == "running"
+    assert len(s.list_events("t1", 0)) == before
     assert s.transition_run(run["id"], "completed")["status"] == "completed"
 
 

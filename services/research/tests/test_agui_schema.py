@@ -217,7 +217,7 @@ def test_previous_nullable_tool_operations_schema_requires_explicit_reset(tmp_pa
     schema = (Path(__file__).parents[1] / "research_service" / "schema.sql").read_text()
     previous_schema = (
         schema.replace(
-            "VALUES (1, 2, 'agui-persistence-v2')",
+            "VALUES (1, 3, 'agui-persistence-v3')",
             "VALUES (1, 1, 'agui-persistence-v1')",
         )
         .replace("thread_id VARCHAR NOT NULL,\n  run_id VARCHAR NOT NULL", "thread_id VARCHAR,\n  run_id VARCHAR")

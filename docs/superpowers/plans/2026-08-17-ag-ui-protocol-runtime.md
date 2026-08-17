@@ -291,7 +291,7 @@ Run: `pnpm --filter @ira/copilot-runtime test && pnpm --filter @ira/copilot-runt
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/copilot-runtime scripts/dev-v1a.sh
@@ -358,29 +358,29 @@ git commit -m "feat: persist interrupt decisions and tool operations"
 - Create: `apps/chat-backend/src/ag-ui/resume-controller.test.ts`
 - Modify: `apps/chat-backend/src/ag-ui/run-controller.ts`
 
-- [ ] **Step 1: Write failing normal-resume tests**
+- [x] **Step 1: Write failing durable recovery tests**
 
-Given an interrupt checkpoint and approved receipt, assert Resume restores the recorded Pi Session revision, verifies the original Tool Call mapping, executes the operation once, emits `TOOL_CALL_RESULT` against the old ID without repeating Start/Args/End, and continues the Pi Turn.
+Given the complete persisted interrupt set, atomically resolve every decision, reconstruct the recorded messages/evidence/tool context, execute each approved durable operation once, and emit `TOOL_CALL_RESULT` against each old ID without repeating Start/Args/End.
 
-- [ ] **Step 2: Write failing fallback tests**
+- [x] **Step 2: Write failing restart and replay tests**
 
-Delete or corrupt the fake Pi Session. Assert Resume creates a `recovery_fallback` Turn containing the original messages, Tool Call, decision, and deterministic result; assert an already-succeeded operation is not executed again.
+Restart Fastify/Pi and assert Resume creates one durable `recovery_fallback` run containing the original context and all decisions. Exact retries reuse the receipts and completed recovery run; already-succeeded operations are never executed again.
 
-- [ ] **Step 3: Run focused tests and verify failure**
+- [x] **Step 3: Run focused tests and verify failure**
 
 Run: `pnpm --filter @ira/chat-backend test -- resume-controller.test.ts research-session.test.ts`
 
 Expected: FAIL because checkpoint restoration is missing.
 
-- [ ] **Step 4: Expose validated Pi session metadata**
+- [x] **Step 4: Expose validated server checkpoint metadata**
 
 Return `sessionId`, revision, and repository-relative session storage reference from the session factory. Reject checkpoint paths outside `.ira-runtime/sessions`; never persist an arbitrary absolute path supplied by a client.
 
-- [ ] **Step 5: Implement Resume controller**
+- [x] **Step 5: Implement atomic decision-set Resume controller**
 
-Read Checkpoint before resolving, call the atomic Research Service command, process Operation state deterministically, then restore/inject. A Resume request must cover every open Interrupt; ordinary input while one is open yields `RUN_ERROR`.
+The Fastify route sends only typed decisions to the internal Research Service; the service atomically validates the complete open set and returns immutable checkpoints and receipts. The controller creates one recovery-only run, processes operation state deterministically, and persists results/errors. Ordinary input while any persisted interrupt remains open yields `RUN_ERROR`.
 
-- [ ] **Step 6: Run backend tests**
+- [x] **Step 6: Run backend and Research Service tests**
 
 Run: `pnpm --filter @ira/chat-backend test && pnpm --filter @ira/chat-backend typecheck`
 

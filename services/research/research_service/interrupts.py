@@ -82,6 +82,129 @@ class InterruptStore:
         receipt = (receipt_id, status, phash, canonical_json(payload), row[3], row[0])
         return self._normalized(row, receipt, status, payload, interrupt_id)
 
+    def resolve_interrupt_set(self, thread_id: str, decisions: list[dict[str, Any]]) -> dict[str, Any]:
+        """Resolve the complete persisted approval set in one database transaction.
+
+        A retry is accepted only when every submitted decision exactly matches its
+        durable receipt.  This keeps a caller retry after a lost HTTP response safe.
+        """
+        if not decisions:
+            raise InterruptError("decisions must not be empty")
+        decision_by_id: dict[str, dict[str, Any]] = {}
+        for decision in decisions:
+            interrupt_id = decision.get("interrupt_id")
+            if not isinstance(interrupt_id, str) or not interrupt_id:
+                raise InterruptError("interrupt_id is required")
+            if interrupt_id in decision_by_id:
+                raise InterruptError("duplicate interrupt_id")
+            self._validate_decision(decision)
+            decision_by_id[interrupt_id] = decision
+
+        with self.database.transaction() as c:
+            open_rows = c.execute(
+                "SELECT cp.interrupt_id,cp.id,cp.run_id,cp.agent_state_json,op.id,op.status "
+                "FROM agent_checkpoints cp "
+                "JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
+                "WHERE cp.thread_id=? AND op.status='waiting_approval' "
+                "ORDER BY cp.created_at,cp.interrupt_id",
+                [thread_id],
+            ).fetchall()
+            open_ids = {row[0] for row in open_rows}
+            submitted_ids = set(decision_by_id)
+
+            if open_rows:
+                if submitted_ids != open_ids:
+                    raise InterruptError("decision set must contain exactly every open interrupt")
+                rows = open_rows
+                replayed = False
+            else:
+                placeholders = ",".join("?" for _ in submitted_ids)
+                rows = c.execute(
+                    "SELECT cp.interrupt_id,cp.id,cp.run_id,cp.agent_state_json,op.id,op.status "
+                    "FROM agent_checkpoints cp "
+                    "JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
+                    f"WHERE cp.thread_id=? AND cp.interrupt_id IN ({placeholders}) "
+                    "ORDER BY cp.created_at,cp.interrupt_id",
+                    [thread_id, *submitted_ids],
+                ).fetchall()
+                if len(rows) != len(submitted_ids):
+                    raise InterruptConflict("decision set does not match a resolved interrupt set")
+                replayed = True
+
+            prepared: list[tuple[Any, dict[str, Any], str, Any]] = []
+            replay_set_ids: set[str] = set()
+            for row in rows:
+                interrupt_id = row[0]
+                decision = decision_by_id[interrupt_id]
+                state = json.loads(row[3]) if isinstance(row[3], str) else row[3]
+                if state.get("nonce") != decision["nonce"]:
+                    raise InterruptConflict(f"nonce mismatch for interrupt {interrupt_id}")
+                phash = payload_hash(decision["payload"])
+                supplied_hash = decision.get("payload_hash")
+                if supplied_hash is not None and supplied_hash != phash:
+                    raise InterruptConflict(f"payload hash mismatch for interrupt {interrupt_id}")
+                receipt = c.execute(
+                    "SELECT id,status,payload_hash,payload_json,tool_operation_id,checkpoint_id,decision_set_id "
+                    "FROM resume_receipts WHERE thread_id=? AND interrupt_id=?",
+                    [thread_id, interrupt_id],
+                ).fetchone()
+                if replayed:
+                    if not receipt or receipt[1] != decision["status"] or receipt[2] != phash:
+                        raise InterruptConflict(f"decision conflicts with receipt for interrupt {interrupt_id}")
+                    if not receipt[6]:
+                        raise InterruptConflict("decision was not resolved as an atomic set")
+                    replay_set_ids.add(receipt[6])
+                elif receipt or row[5] != "waiting_approval":
+                    raise InterruptConflict(f"interrupt {interrupt_id} is already resolved")
+                prepared.append((row, decision, phash, receipt))
+
+            if replayed:
+                if len(replay_set_ids) != 1:
+                    raise InterruptConflict("decisions do not belong to one atomic set")
+                replay_members = {
+                    item[0] for item in c.execute(
+                        "SELECT interrupt_id FROM resume_receipts WHERE thread_id=? AND decision_set_id=?",
+                        [thread_id, next(iter(replay_set_ids))],
+                    ).fetchall()
+                }
+                if replay_members != submitted_ids:
+                    raise InterruptConflict("decision set replay must match original membership")
+
+            receipts: list[dict[str, Any]] = []
+            decision_set_id = str(uuid4()) if not replayed else next(iter(replay_set_ids))
+            for row, decision, phash, receipt in prepared:
+                interrupt_id = row[0]
+                normalized_row = (row[1], row[2], row[3], row[4], row[5])
+                if not replayed:
+                    approved = decision["status"] == "resolved" and decision["payload"]["approved"]
+                    operation_status = "approved" if approved else "rejected" if decision["status"] == "resolved" else "cancelled"
+                    c.execute("UPDATE tool_operations SET status=? WHERE id=?", [operation_status, row[4]])
+                    receipt_id = str(uuid4())
+                    c.execute(
+                        "INSERT INTO resume_receipts(id,thread_id,interrupt_id,status,payload_hash,payload_json,tool_operation_id,checkpoint_id,decision_set_id) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        [receipt_id, thread_id, interrupt_id, decision["status"], phash,
+                         canonical_json(decision["payload"]), row[4], row[1], decision_set_id],
+                    )
+                    receipt = (receipt_id, decision["status"], phash,
+                               canonical_json(decision["payload"]), row[4], row[1])
+                receipts.append(self._normalized(
+                    normalized_row, receipt, decision["status"], decision["payload"], interrupt_id,
+                ))
+
+            checkpoints = [self._get_checkpoint(c, thread_id, row[0]) for row in rows]
+        return {"thread_id": thread_id, "receipts": receipts, "checkpoints": checkpoints, "replayed": replayed}
+
+    @staticmethod
+    def _validate_decision(decision: dict[str, Any]) -> None:
+        if decision.get("status") not in {"resolved", "cancelled"}:
+            raise InterruptError("status must be resolved or cancelled")
+        if not isinstance(decision.get("nonce"), str) or not decision["nonce"]:
+            raise InterruptError("nonce is required")
+        payload = decision.get("payload")
+        if not isinstance(payload, dict) or set(payload) != {"approved"} or not isinstance(payload["approved"], bool):
+            raise InterruptError("payload must be {approved: boolean}")
+
     def begin_operation(self, thread_id: str, operation_id: str) -> dict[str, Any]:
         with self.database.transaction() as c:
             row = c.execute("SELECT id,status FROM tool_operations WHERE id=? AND thread_id=?", [operation_id, thread_id]).fetchone()
@@ -111,7 +234,10 @@ class InterruptStore:
 
     def get_checkpoint(self, thread_id: str, interrupt_id: str) -> dict[str, Any]:
         """Return only the immutable, service-recorded resume context for an interrupt."""
-        row = self.database.connection.execute(
+        return self._get_checkpoint(self.database.connection, thread_id, interrupt_id)
+
+    def _get_checkpoint(self, connection, thread_id: str, interrupt_id: str) -> dict[str, Any]:
+        row = connection.execute(
             "SELECT cp.id,cp.run_id,cp.tool_call_id,cp.pi_session_id,cp.last_event_seq,cp.agent_state_json,"
             "op.id,op.tool_name,op.input_json,e.event_type,e.payload_json,r.input_json "
             "FROM agent_checkpoints cp JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
