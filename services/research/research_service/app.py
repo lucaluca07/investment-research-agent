@@ -126,7 +126,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
 
     @app.post("/v1/runs/{run_id}/transition")
     def transition_agui_run(run_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        try: return agui(request).transition_run(run_id, payload["status"], payload.get("error"))
+        try: return agui(request).transition_run(run_id, payload["status"], payload.get("error"), payload.get("emit_event", True))
         except KeyError as exc: raise HTTPException(status_code=404, detail="run not found") from exc
         except ValueError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 

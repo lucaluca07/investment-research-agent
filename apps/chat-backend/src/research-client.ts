@@ -68,7 +68,7 @@ export class ResearchClient {
   async appendAguiEvents(thread_id: string, run_id: string, events: Array<{ type: string; data: Record<string, unknown> }>): Promise<{ events: AguiEvent[] }> { const v=await this.post(`v1/threads/${encodeURIComponent(thread_id)}/events:batch`, { run_id, events }); if(!isObject(v)||!Array.isArray(v.events)) throw new ResearchClientError("invalid AG-UI events response",200,v); return {events: validateSequences(v.events.map(parseAguiEvent))}; }
   async listAguiEvents(thread_id: string, after = 0): Promise<AguiEvent[]> { const v=await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/events?after=${after}`); if(!Array.isArray(v)) throw new ResearchClientError("invalid AG-UI events response",200,v); return validateSequences(v.map(parseAguiEvent)); }
   async getAguiState(thread_id: string): Promise<ThreadState> { return parseThreadState(await this.request("GET", `v1/threads/${encodeURIComponent(thread_id)}/state`)); }
-  async transitionAguiRun(run_id: string, status: AguiRun["status"], error?: Record<string, unknown>): Promise<AguiRun> { return parseAguiRun(await this.post(`v1/runs/${encodeURIComponent(run_id)}/transition`, { status, error })); }
+  async transitionAguiRun(run_id: string, status: AguiRun["status"], error?: Record<string, unknown>, emit_event = true): Promise<AguiRun> { return parseAguiRun(await this.post(`v1/runs/${encodeURIComponent(run_id)}/transition`, { status, error, emit_event })); }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
     return this.post("v1/tools/query-company-snapshot", { ticker }) as Promise<CompanySnapshot>;
