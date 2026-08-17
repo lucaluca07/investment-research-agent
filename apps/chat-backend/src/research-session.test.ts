@@ -16,7 +16,13 @@ describe("research-only pi session", () => {
   it("exposes validated session metadata", async () => {
     const s = await createResearchSession({ client:{} as ResearchClient, sessionId:"meta", runtimeDir:"/tmp/meta", createAgentSession:vi.fn().mockResolvedValue({session:{}}), modelRuntime:{setRuntimeApiKey:vi.fn(),getModel:vi.fn().mockReturnValue({})} as never, model:{} as never, environment:{KIMI_API_KEY:"x"} });
     expect(getResearchSessionMetadata(s)?.sessionId).toBe("meta");
+    expect(getResearchSessionMetadata(s)?.storageRef).toMatch(/^sessions\//);
     expect(() => validateSessionStoragePath("/tmp/meta", "/etc/passwd")).toThrow();
+  });
+  it("does not fabricate restore semantics when Pi exposes no restore API", async () => {
+    const session = { prompt: vi.fn() };
+    const created = await createResearchSession({ client:{} as ResearchClient, sessionId:"no-restore", runtimeDir:"/tmp/meta", createAgentSession:vi.fn().mockResolvedValue({session}), modelRuntime:{setRuntimeApiKey:vi.fn(),getModel:vi.fn().mockReturnValue({})} as never, model:{} as never, environment:{KIMI_API_KEY:"x"} });
+    expect(created).not.toHaveProperty("restoreAndContinue");
   });
   it("configures pi with the selected model and reasoning effort", async () => {
     const setRuntimeApiKey = vi.fn();

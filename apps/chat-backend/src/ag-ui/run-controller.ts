@@ -22,10 +22,10 @@ export class RunController {
 
   getActive(threadId: string): AguiRun | undefined { return this.active.get(threadId)?.run; }
   registerInterrupt(threadId: string, interruptId: string, runId: string): void { let set=this.openInterrupts.get(threadId); if(!set){set=new Map();this.openInterrupts.set(threadId,set);} set.set(interruptId, runId); }
-  async resume(request: ResumeRequest): Promise<Awaited<ReturnType<ResumeController["resume"]>>> { const result=await (this.options.resumeController ?? new ResumeController(this.options.client)).resume(request); return result; }
+  async resume(request: ResumeRequest): Promise<Awaited<ReturnType<ResumeController["resume"]>>> { const result=await this.resumer().resume(request); return result; }
   async resumeActive(request: Omit<ResumeRequest, "session"|"emit">): Promise<Awaited<ReturnType<ResumeController["resume"]>>> {
     const active = this.active.get(request.threadId); if (!active) throw new Error("thread has no active run");
-    const result = await (this.options.resumeController ?? new ResumeController(this.options.client)).resume({ ...request, session: active.session, emit: async (event) => { await active.writer.write(event); } });
+    const result = await this.resumer().resume({ ...request, session: active.session, emit: async (event) => { await active.writer.write(event); } });
     this.openInterrupts.get(request.threadId)?.delete(request.decision.interrupt_id);
     if (!this.openInterrupts.get(request.threadId)?.size) this.openInterrupts.delete(request.threadId);
     await active.session.prompt(`Continue interrupted research operation ${result.operation_id}`);
@@ -117,6 +117,7 @@ export class RunController {
   }
 
   private async getSession(threadId: string): Promise<Session> { const cached = this.sessions.get(threadId); if (cached) return cached; const session = await (this.options.sessionFactory ? this.options.sessionFactory(threadId) : Promise.reject(new Error("sessionFactory is required"))); this.sessions.set(threadId, session); return session; }
+  private resumer(): ResumeController { return this.options.resumeController ?? new ResumeController(this.options.client, { resolve: async (threadId, interruptId, nonce, status, payload) => this.options.client.resolveInterrupt(threadId, interruptId, { nonce, status, payload }), status: (threadId, operationId) => this.options.client.operationStatus(threadId, operationId), begin: async (threadId, operationId) => { await this.options.client.beginOperation(threadId, operationId); }, complete: async (threadId, operationId, result) => { await this.options.client.completeOperation(threadId, operationId, result); } }); }
 }
 
 function promptText(input: unknown): string { if (typeof input === "string") return input; if (Array.isArray(input)) { const last = [...input].reverse().find((item) => item && typeof item === "object" && "role" in item && (item as any).role === "user"); if (last && typeof (last as any).content === "string") return (last as any).content; } if (input && typeof input === "object" && typeof (input as any).content === "string") return (input as any).content; return JSON.stringify(input); }

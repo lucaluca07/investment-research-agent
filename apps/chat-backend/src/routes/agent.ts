@@ -28,4 +28,17 @@ export async function registerAgentRoutes(app: FastifyInstance, client: Research
   app.get("/v1/threads/:threadId/events", async (request) => { const q = request.query as { after?: string }; return client.listAguiEvents((request.params as { threadId: string }).threadId, Number(q.after ?? 0)); });
   app.get("/v1/threads/:threadId/state", async (request) => client.getAguiState((request.params as { threadId: string }).threadId));
   app.post("/v1/threads/:threadId/stop", async (request, reply) => { try { return await controller.stop((request.params as { threadId: string }).threadId); } catch (error) { return reply.code(409).send({ detail: error instanceof Error ? error.message : "cannot stop run" }); } });
+  app.post("/v1/threads/:threadId/interrupts/:interruptId/resume", async (request, reply) => {
+    const { threadId, interruptId } = request.params as { threadId: string; interruptId: string };
+    const body = (request.body ?? {}) as { status?: "resolved" | "cancelled"; payload?: { approved?: unknown } };
+    if ((body.status !== "resolved" && body.status !== "cancelled") || typeof body.payload?.approved !== "boolean") return reply.code(422).send({ detail: "status and payload.approved are required" });
+    try {
+      const checkpoint = await client.getInterruptCheckpoint(threadId, interruptId);
+      return await controller.resumeActive({
+        threadId,
+        checkpointReader: async () => ({ ...checkpoint, session_id: checkpoint.session?.session_id, session_revision: checkpoint.session?.revision, session_storage_ref: checkpoint.session?.storage_ref }),
+        decision: { interrupt_id: checkpoint.interrupt_id, run_id: checkpoint.run_id, operation_id: checkpoint.operation_id, checkpoint_id: checkpoint.checkpoint_id, receipt_id: "", status: body.status, payload: { approved: body.payload.approved } },
+      });
+    } catch (error) { return reply.code(error instanceof Error && /active|checkpoint|match/i.test(error.message) ? 409 : 500).send({ detail: error instanceof Error ? error.message : "cannot resume" }); }
+  });
 }

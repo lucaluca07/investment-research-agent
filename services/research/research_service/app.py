@@ -80,6 +80,10 @@ class InterruptRequest(RequestModel):
     tool_name: str = ""
     input: Any = Field(default_factory=dict)
     last_event_seq: int | None = Field(default=None, ge=1)
+    tool_call_id: str | None = None
+    pi_session_id: str | None = None
+    pi_session_revision: int | None = Field(default=None, ge=0)
+    pi_session_storage_ref: str | None = None
 
 
 class ResolveInterruptRequest(RequestModel):
@@ -134,11 +138,19 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             return interrupts(request).request_interrupt(
                 payload.thread_id, payload.interrupt_id, run_id=payload.run_id,
                 nonce=payload.nonce, tool_name=payload.tool_name,
-                input_value=payload.input, last_event_seq=payload.last_event_seq,
+                input_value=payload.input, last_event_seq=payload.last_event_seq, tool_call_id=payload.tool_call_id,
+                pi_session_id=payload.pi_session_id, pi_session_revision=payload.pi_session_revision,
+                pi_session_storage_ref=payload.pi_session_storage_ref,
             )
         except KeyError as exc: raise HTTPException(status_code=422, detail=f"missing field: {exc.args[0]}") from exc
         except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    @app.get("/v1/internal/interrupts/{thread_id}/{interrupt_id}/checkpoint")
+    def get_interrupt_checkpoint(thread_id: str, interrupt_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return interrupts(request).get_checkpoint(thread_id, interrupt_id)
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/v1/internal/interrupts/{thread_id}/{interrupt_id}/resolve")
     def resolve_interrupt(thread_id: str, interrupt_id: str, payload: ResolveInterruptRequest, request: Request) -> dict[str, Any]:

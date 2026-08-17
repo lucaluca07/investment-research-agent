@@ -1,10 +1,10 @@
 import { EventType, type AGUIEvent } from "@ag-ui/core";
 import type { InterruptDecision, ResearchClient } from "../research-client.js";
-import { getResearchSessionMetadata, validateSessionStoragePath } from "../pi/research-session.js";
+import { getResearchSessionMetadata, resolveSessionStorageRef } from "../pi/research-session.js";
 
 export type ResumeCheckpoint = {
   checkpoint_id: string; interrupt_id: string; run_id: string; operation_id: string;
-  session_id?: string; session_revision?: number; session_storage_path?: string;
+  session_id?: string; session_revision?: number; session_storage_ref?: string;
   tool_call_id?: string; tool_name?: string; input?: unknown; messages?: unknown[];
 };
 export type ResumeOperationApi = { resolve(threadId: string, interruptId: string, nonce: string, status: "resolved"|"cancelled", payload: { approved: boolean }): Promise<InterruptDecision>; status(threadId: string, operationId: string): Promise<{ status: string; result?: unknown }>; begin(threadId: string, operationId: string): Promise<void>; complete(threadId: string, operationId: string, result: unknown): Promise<void> };
@@ -22,7 +22,7 @@ export class ResumeController {
     if (!this.operations) throw new Error("resume operation API is required");
     if (checkpoint.session_id && checkpoint.session_id !== (getResearchSessionMetadata(request.session)?.sessionId)) throw new Error("checkpoint session mismatch");
     if (checkpoint.session_revision !== undefined && (!Number.isInteger(checkpoint.session_revision) || checkpoint.session_revision < 0)) throw new Error("invalid checkpoint revision");
-    if (checkpoint.session_storage_path) validateSessionStoragePath(process.env.IRA_RUNTIME_DIR ?? `${process.cwd()}/.ira-runtime`, checkpoint.session_storage_path);
+    if (checkpoint.session_storage_ref) resolveSessionStorageRef(process.env.IRA_RUNTIME_DIR ?? `${process.cwd()}/.ira-runtime`, checkpoint.session_storage_ref);
     if (checkpoint.tool_call_id && checkpoint.tool_name === undefined) throw new Error("checkpoint tool mapping missing");
     const current = await this.operations.status(request.threadId, checkpoint.operation_id);
     if (current.status === "succeeded") {
@@ -37,12 +37,15 @@ export class ResumeController {
     const approved = resolved.payload.approved && resolved.status === "resolved";
     let result: unknown = { approved, operation_id: checkpoint.operation_id };
     if (approved) {
+      await this.operations.begin(request.threadId, checkpoint.operation_id);
       try {
-        await this.operations.begin(request.threadId, checkpoint.operation_id);
+        if (checkpoint.session_revision !== undefined && !request.session.restore) throw new Error("Pi session revision restore unavailable");
         await request.session.restore?.(checkpoint.session_revision ?? 0); result = request.execute ? await request.execute(checkpoint.input, checkpoint.tool_name) : result;
-        await this.operations.complete(request.threadId, checkpoint.operation_id, result);
       }
-      catch { result = { status: "recovery_fallback", messages: checkpoint.messages ?? [], tool_call_id: checkpoint.tool_call_id, tool_name: checkpoint.tool_name, input: checkpoint.input, decision: resolved.payload, result }; }
+      catch {
+        result = { status: "recovery_fallback", messages: checkpoint.messages ?? [], tool_call_id: checkpoint.tool_call_id, tool_name: checkpoint.tool_name, input: checkpoint.input, decision: resolved.payload, result };
+      }
+      await this.operations.complete(request.threadId, checkpoint.operation_id, result);
     } else result = { status: resolved.status === "cancelled" ? "cancelled" : "rejected", approved: false };
     const events: AGUIEvent[] = [{ type: EventType.TOOL_CALL_RESULT, toolCallId: checkpoint.tool_call_id ?? checkpoint.operation_id, content: JSON.stringify(result), role: "tool" } as AGUIEvent];
     await request.emit(events[0]);

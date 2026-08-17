@@ -1,5 +1,6 @@
 """Durable interrupt approval state machine for AG-UI runs."""
 import json
+from pathlib import PurePosixPath
 from typing import Any
 from uuid import uuid4
 
@@ -26,10 +27,13 @@ class InterruptStore:
     def request_interrupt(self, thread_id: str, interrupt_id: str, *, run_id: str,
                           nonce: str, tool_name: str = "", input_value: Any = None,
                           tool_operation_id: str | None = None,
-                          last_event_seq: int | None = None) -> dict[str, Any]:
+                          last_event_seq: int | None = None, tool_call_id: str | None = None,
+                          pi_session_id: str | None = None, pi_session_revision: int | None = None,
+                          pi_session_storage_ref: str | None = None) -> dict[str, Any]:
         if not interrupt_id or not nonce:
             raise InterruptError("interrupt_id and nonce are required")
         input_value = {} if input_value is None else input_value
+        session = self._session_state(pi_session_id, pi_session_revision, pi_session_storage_ref)
         with self.database.transaction() as c:
             run = c.execute("SELECT id FROM runs WHERE id=? AND thread_id=?", [run_id, thread_id]).fetchone()
             if not run:
@@ -46,8 +50,8 @@ class InterruptStore:
             operation_id = tool_operation_id or str(uuid4())
             c.execute("INSERT INTO tool_operations(id,idempotency_key,thread_id,run_id,tool_name,input_json,input_hash,status,approval_id) VALUES (?,?,?,?,?,?,?,'waiting_approval',?)", [operation_id, nonce, thread_id, run_id, tool_name, canonical_json(input_value), payload_hash(input_value), interrupt_id])
             checkpoint_id = str(uuid4())
-            state = {"nonce": nonce, "interrupt_id": interrupt_id, "tool_name": tool_name, "input": input_value}
-            c.execute("INSERT INTO agent_checkpoints(id,thread_id,run_id,interrupt_id,last_event_seq,agent_state_json) VALUES (?,?,?,?,?,?::JSON)", [checkpoint_id, thread_id, run_id, interrupt_id, seq, canonical_json(state)])
+            state = {"nonce": nonce, "interrupt_id": interrupt_id, "tool_name": tool_name, "input": input_value, "session": session}
+            c.execute("INSERT INTO agent_checkpoints(id,thread_id,run_id,tool_call_id,interrupt_id,pi_session_id,last_event_seq,agent_state_json) VALUES (?,?,?,?,?,?,?,?::JSON)", [checkpoint_id, thread_id, run_id, tool_call_id, interrupt_id, pi_session_id, seq, canonical_json(state)])
         return self._read(self.database.connection, thread_id, interrupt_id)
 
     def resolve_interrupt(self, thread_id: str, interrupt_id: str, nonce: str,
@@ -105,6 +109,29 @@ class InterruptStore:
                 final = "succeeded"
         return {"id": operation_id, "status": final}
 
+    def get_checkpoint(self, thread_id: str, interrupt_id: str) -> dict[str, Any]:
+        """Return only the immutable, service-recorded resume context for an interrupt."""
+        row = self.database.connection.execute(
+            "SELECT cp.id,cp.run_id,cp.tool_call_id,cp.pi_session_id,cp.last_event_seq,cp.agent_state_json,"
+            "op.id,op.tool_name,op.input_json,e.event_type,e.payload_json "
+            "FROM agent_checkpoints cp JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
+            "JOIN agui_events e ON e.thread_id=cp.thread_id AND e.sequence=cp.last_event_seq "
+            "WHERE cp.thread_id=? AND cp.interrupt_id=?",
+            [thread_id, interrupt_id],
+        ).fetchone()
+        if not row:
+            raise InterruptNotFound("interrupt checkpoint not found")
+        state = json.loads(row[5]) if isinstance(row[5], str) else row[5]
+        input_value = json.loads(row[8]) if isinstance(row[8], str) else row[8]
+        session = state.get("session")
+        return {
+            "checkpoint_id": row[0], "interrupt_id": interrupt_id, "run_id": row[1],
+            "operation_id": row[6], "tool_call_id": row[2], "tool_name": row[7],
+            "input": input_value, "nonce": state.get("nonce"), "last_event_seq": row[4],
+            "last_event": {"type": row[9], "data": json.loads(row[10]) if isinstance(row[10], str) else row[10]},
+            "session": session if session else None,
+        }
+
     @staticmethod
     def _normalized(row, receipt, status, payload, interrupt_id):
         return {"interrupt_id": interrupt_id, "run_id": row[1], "operation_id": receipt[4], "checkpoint_id": receipt[5], "receipt_id": receipt[0], "status": status, "payload": payload}
@@ -114,3 +141,17 @@ class InterruptStore:
         if not row: raise InterruptNotFound("interrupt not found")
         state = json.loads(row[2]) if isinstance(row[2], str) else row[2]
         return {"interrupt_id": interrupt_id, "run_id": row[1], "operation_id": row[3], "checkpoint_id": row[0], "status": row[4], "nonce": state.get("nonce"), "input": state.get("input"), "tool_name": state.get("tool_name")}
+
+    @staticmethod
+    def _session_state(session_id: str | None, revision: int | None, storage_ref: str | None) -> dict[str, Any] | None:
+        supplied = (session_id, revision, storage_ref)
+        if all(value is None for value in supplied):
+            return None
+        if not isinstance(session_id, str) or not session_id or not isinstance(revision, int) or revision < 0:
+            raise InterruptError("invalid Pi session metadata")
+        if not isinstance(storage_ref, str) or not storage_ref:
+            raise InterruptError("Pi session storage ref is required")
+        ref = PurePosixPath(storage_ref)
+        if ref.is_absolute() or ".." in ref.parts or len(ref.parts) < 3 or ref.parts[0] != "sessions":
+            raise InterruptError("Pi session storage ref must be repository-relative under sessions")
+        return {"session_id": session_id, "revision": revision, "storage_ref": storage_ref}

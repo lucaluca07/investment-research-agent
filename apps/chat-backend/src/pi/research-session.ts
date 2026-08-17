@@ -33,7 +33,7 @@ export type ResearchSessionOptions = {
   createModelRuntime?: (options: { authPath: string; modelsPath: string; allowModelNetwork: boolean }) => Promise<ModelRuntime>;
 };
 
-export type ResearchSessionMetadata = { sessionId: string; revision: number; storagePath: string };
+export type ResearchSessionMetadata = { sessionId: string; revision: number; storagePath: string; storageRef: string };
 
 export function validateSessionStoragePath(runtimeDir: string, storagePath: string): string {
   const root = path.resolve(runtimeDir, "sessions");
@@ -41,6 +41,12 @@ export function validateSessionStoragePath(runtimeDir: string, storagePath: stri
   const relative = path.relative(root, resolved);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Pi session storage path must be inside .ira-runtime/sessions");
   return resolved;
+}
+
+/** Convert a persisted repository-relative checkpoint ref into a validated local path. */
+export function resolveSessionStorageRef(runtimeDir: string, storageRef: string): string {
+  if (path.isAbsolute(storageRef) || storageRef.split(/[\\/]/).includes("..") || !storageRef.startsWith("sessions/")) throw new Error("Pi session storage ref must be repository-relative under sessions");
+  return validateSessionStoragePath(runtimeDir, path.join(runtimeDir, storageRef));
 }
 
 export function getResearchSessionMetadata(session: unknown): ResearchSessionMetadata | undefined {
@@ -92,11 +98,11 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
     customTools: createResearchTools(client),
     resourceLoader,
   });
-  const metadata: ResearchSessionMetadata = { sessionId: options.sessionId, revision: 0, storagePath: validateSessionStoragePath(runtimeDir, sessionDir) };
+  const metadata: ResearchSessionMetadata = { sessionId: options.sessionId, revision: 0, storagePath: validateSessionStoragePath(runtimeDir, sessionDir), storageRef: path.relative(runtimeDir, sessionDir) };
   if (created.session && typeof created.session === "object") {
     Object.defineProperty(created.session, "researchSessionMetadata", { value: metadata, enumerable: false, configurable: true });
-    const target = created.session as Record<string, unknown>;
-    if (typeof target.restoreAndContinue !== "function") target.restoreAndContinue = async (revision: number, text: string) => { metadata.revision = revision; if (typeof target.prompt === "function") await (target.prompt as (value: string) => Promise<void>)(text); };
+    // Pi's currently installed public session surface does not expose a revision restore API.
+    // Do not fake one: callers must take the explicit recovery path until Pi supplies it.
   }
   return created.session;
 }
