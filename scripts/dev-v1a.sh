@@ -16,7 +16,7 @@ trimmed_value() {
 
 llm_api_key="$(trimmed_value "${LLM_API_KEY:-}")"
 kimi_api_key="$(trimmed_value "${KIMI_API_KEY:-}")"
-compat_profile="$(trimmed_value "${LLM_COMPAT_PROFILE:-kimi}")"
+compat_profile="${LLM_COMPAT_PROFILE:-kimi}"
 
 if [[ "$compat_profile" != "kimi" && "$compat_profile" != "openai" ]]; then
   echo "LLM_COMPAT_PROFILE must be kimi or openai." >&2

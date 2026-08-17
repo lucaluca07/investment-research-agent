@@ -16,6 +16,12 @@ The optional `pnpm dev:v1a` script starts the Python service, Chat Backend,
 and Web dev server on loopback addresses. It traps termination and cleans up
 all child processes.
 
+To validate credentials and profile selection without starting any service:
+
+```bash
+bash scripts/dev-v1a.sh --validate-credentials
+```
+
 ## Model configuration
 
 By default, the local stack uses the Kimi Coding Plan endpoint and `k3-256k`.
