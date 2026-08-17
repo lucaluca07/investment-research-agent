@@ -64,12 +64,10 @@ describe("research-only pi session", () => {
     expect(() => new ResearchClient("https://example.com")).toThrow(/loopback/);
   });
 
-  it("accepts IPv6 loopback and preserves getChatHistory and error bodies", async () => {
+  it("accepts IPv6 loopback and preserves error bodies", async () => {
     const fetch = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ messages: [] }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "citation conflict" }), { status: 409 }));
     const client = new ResearchClient("http://[::1]:8000", { fetch });
-    await expect(client.getChatHistory("chat-1")).resolves.toEqual({ messages: [] });
     await expect(client.saveResearchNote({
       run_id: "run-1", idempotency_key: "key", title: "T", body: "B", citation_ids: ["c"],
     })).rejects.toMatchObject({ status: 409, body: { detail: "citation conflict" } } satisfies Partial<ResearchClientError>);

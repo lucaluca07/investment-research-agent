@@ -138,7 +138,6 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         agui_store = AguiStore(database)
         interrupt_store = InterruptStore(database)
         seed_fixture_citations(run_store)
-        run_store.recover_incomplete_runs()
         app.state.database = database
         app.state.run_store = run_store
         app.state.agui_store = agui_store
@@ -299,111 +298,6 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             logger.exception("research note fault or persistence failure")
             raise HTTPException(status_code=500, detail="internal server error") from None
 
-    @app.post("/v1/chats", status_code=status.HTTP_201_CREATED)
-    def create_chat(payload: ChatRequest, request: Request) -> dict[str, str]:
-        chat_id = payload.chat_id or str(uuid4())
-        pi_session_id = payload.pi_session_id or str(uuid4())
-        store(request).create_chat(chat_id, pi_session_id)
-        return {"id": chat_id, "pi_session_id": pi_session_id}
-
-    @app.get("/v1/chats")
-    def list_chats(request: Request) -> list[dict[str, Any]]:
-        return store(request).list_chats()
-
-    @app.get("/v1/chats/{chat_id}")
-    def get_chat(chat_id: str, request: Request) -> dict[str, Any]:
-        try:
-            return store(request).get_chat(chat_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        except IllegalTransition as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    @app.get("/v1/chats/{chat_id}/messages")
-    def messages(chat_id: str, request: Request) -> dict[str, list[Any]]:
-        try:
-            messages = store(request).list_messages(chat_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"messages": [
-            {"id": message.id, "chat_id": message.chat_id, "role": message.role,
-             "content": message.content, "created_at": message.created_at}
-            for message in messages
-        ]}
-
-    @app.post("/v1/chats/{chat_id}/events")
-    def append_event(chat_id: str, payload: EventRequest, request: Request) -> dict[str, Any]:
-        try:
-            return store(request).append_event(chat_id, payload.type, payload.data)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-
-    @app.get("/v1/chats/{chat_id}/events")
-    def list_events(chat_id: str, request: Request, after: int = 0) -> list[dict[str, Any]]:
-        try:
-            return store(request).list_events(chat_id, after)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-
-    @app.post("/v1/chats/{chat_id}/messages", status_code=status.HTTP_201_CREATED)
-    def append_message(chat_id: str, payload: MessageRequest, request: Request) -> dict[str, Any]:
-        try:
-            message = store(request).append_message(chat_id, payload.role, payload.content, payload.idempotency_key)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {
-            "id": message.id, "chat_id": message.chat_id, "role": message.role,
-            "content": message.content, "created_at": message.created_at,
-        }
-
-    @app.post("/v1/research-runs", status_code=status.HTTP_201_CREATED)
-    def create_run(payload: RunRequest, request: Request) -> dict[str, Any]:
-        try:
-            run = store(request).create_run(payload.chat_id, payload.pi_session_id, payload.model, payload.idempotency_key)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except IllegalTransition as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except Exception:
-            logger.exception("failed to create research run")
-            raise HTTPException(status_code=500, detail="internal server error") from None
-        return {
-            "id": run.id, "chat_id": run.chat_id, "pi_session_id": run.pi_session_id,
-            "model": run.model, "created_at": run.created_at, "status": run.status, "error": run.error, "replayed": run.replayed,
-        }
-
-    @app.patch("/v1/chats/{chat_id}/pi-session")
-    def update_pi_session(chat_id: str, payload: PiSessionRequest, request: Request) -> dict[str, str]:
-        try:
-            store(request).update_pi_session(chat_id, payload.pi_session_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="chat not found") from exc
-        return {"chat_id": chat_id, "pi_session_id": payload.pi_session_id}
-
-    @app.patch("/v1/research-runs/{run_id}")
-    def update_run(run_id: str, payload: RunStatusRequest, request: Request) -> dict[str, str]:
-        try:
-            store(request).update_run(run_id, payload.status, payload.error)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="run not found") from exc
-        return {"id": run_id, "status": payload.status}
-
-    @app.get("/v1/research-runs/{run_id}")
-    def get_run(run_id: str, request: Request) -> dict[str, Any]:
-        try:
-            run = store(request).get_run(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="run not found") from exc
-        return {"id": run.id, "chat_id": run.chat_id, "pi_session_id": run.pi_session_id,
-                "model": run.model, "created_at": run.created_at, "status": run.status,
-                "error": run.error, "replayed": run.replayed}
-
     @app.get("/v1/test/counts")
     def counts(request: Request) -> dict[str, int]:
         if not test_mode or os.getenv("IRA_TEST_MODE") != "1":
@@ -411,7 +305,7 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         with store(request).database.read() as connection:
             return {
                 table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                for table in ("chats", "research_runs", "research_run_steps", "research_notes", "citations")
+                for table in ("research_run_steps", "research_notes", "citations")
             }
 
     return app
