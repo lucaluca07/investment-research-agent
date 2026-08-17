@@ -4,6 +4,12 @@
 状态：已完成方案评审，等待书面规格复核  
 项目：`investment-research-agent`
 
+## 0. 规格覆盖关系
+
+本规格是《个人投研 Agent V1 设计规格》的专项修订。经批准后，本规格覆盖原规格第 3.6 节中“不实现 Adapter”以及原验收标准第 7 条中“不建设通用 Runtime 或 Adapter”的限制。
+
+新增 Adapter 仅负责 Pi → AG-UI 协议转换和持久化客户端恢复，不实现或复制 Pi 的 Agent Loop。原规格关于 Python 单写者、生产工具白名单、研究资产权威性、人工审批、安全边界和聊天不得删除正式研究资产的要求继续有效。
+
 ## 1. 背景与目标
 
 当前 V1a 已验证 Web、Chat Backend、Pi Session、Python Research Service、DuckDB 和 SSE 的垂直链路，但界面仍是功能性原型，自定义聊天协议也已暴露以下问题：
@@ -71,6 +77,17 @@ AG-UI 作为 Agent 与前端之间的规范协议，负责：
 
 CopilotKit Headless 负责消费 AG-UI、维护运行状态和提供 Agent 交互能力。视觉组件由内部设计系统实现，不采用完整的预制聊天外观。
 
+前端采用 CopilotKit `selfManagedAgents`，注册仓库自有的 `PersistentResearchAgent extends AbstractAgent`。不增加 Copilot Runtime 代理层，也不使用仅面向开发的直接 `HttpAgent` 注册方式。
+
+`PersistentResearchAgent` 是浏览器中唯一的通信适配器，负责：
+
+- `run()`：向 Fastify 创建 Run 并消费 AG-UI SSE。
+- `abort()`：调用显式停止接口。
+- `loadThread()`：加载 Thread Snapshot。
+- `reconnect()`：从最后持久化事件序号恢复。
+- 为请求附加 Thread ID、Run ID 和客户端幂等键。
+- 声明实际支持的 streaming、resumable 和 tools capabilities。
+
 参考：https://docs.copilotkit.ai/
 
 ### 3.3 基础组件：shadcn/ui
@@ -93,8 +110,10 @@ shadcn/ui 作为源码分发基础，组件进入 `packages/ui` 并由本仓库�
 
 ```text
 Web / CopilotKit Headless
-        │ AG-UI
-        ▼
+        │
+        └── selfManagedAgents / PersistentResearchAgent
+                         │ AG-UI
+                         ▼
 Fastify Chat Backend
         │
         ├── Pi Adapter ── Pi Session / Research Tools
@@ -105,7 +124,7 @@ Fastify Chat Backend
 Python Research Service ── DuckDB
 ```
 
-系统只有一个协议转换边界：`Pi Adapter → AG-UI Events`。前端、持久化和测试均以 AG-UI 为准，不保留第二套旧聊天事件模型。
+服务端只有一个模型事件转换边界：`Pi Adapter → AG-UI Events`。浏览器端只有一个持久化传输边界：`PersistentResearchAgent → Fastify AG-UI Endpoint`。前端、持久化和测试均以 AG-UI 为准，不保留第二套旧聊天事件模型。
 
 ## 5. AG-UI 数据流
 
@@ -113,12 +132,12 @@ Python Research Service ── DuckDB
 
 1. 用户在 Composer 发送问题。
 2. CopilotKit Headless 创建 Thread Run 请求。
-3. Chat Backend 先持久化用户 UI Message 和 Run。
+3. Chat Backend 先将 Run input 和 Run 状态持久化为 AG-UI 事件。
 4. Chat Backend 创建或恢复对应 Pi Session。
 5. Pi Adapter 将 Pi 输出转换为 AG-UI 标准事件。
 6. 每个事件先写入 Research Service，再对浏览器广播。
 7. 前端根据稳定 ID 更新同一个 UI Message。
-8. Run 完成后保存完整 Message Snapshot。
+8. Run 完成后按策略生成可重建的 Message Snapshot 检查点。
 
 ### 5.2 Pi 事件映射
 
@@ -130,7 +149,7 @@ Pi tool start            → TOOL_CALL_START
 Pi tool arguments        → TOOL_CALL_ARGS
 Pi tool result           → TOOL_CALL_RESULT / TOOL_CALL_END
 Run lifecycle            → RUN_STARTED / RUN_FINISHED / RUN_ERROR
-Research progress        → CUSTOM research-status event
+Research progress        → STEP_STARTED / STEP_FINISHED 或 ACTIVITY 事件
 Evidence                 → CUSTOM evidence event
 Artifact                 → CUSTOM artifact event
 Approval                 → interrupt/state event
@@ -151,27 +170,45 @@ Approval                 → interrupt/state event
 
 本地应用不采用需要 Redis 的默认可恢复流方案。恢复能力由现有持久化层提供：
 
-- 完整刷新先加载 Message Snapshot。
-- 活跃 Run 继续订阅最后事件序号之后的事件。
-- 网络断线只补发缺失事件，不重新执行 Agent。
+- `GET /v1/threads/:threadId/state` 返回最新 Snapshot、`last_event_seq` 和 active Run。
+- `POST /v1/threads/:threadId/runs` 创建新 Run，并要求客户端幂等键。
+- `GET /v1/threads/:threadId/events?after=:sequence` 回放缺失事件并进入实时订阅。
+- 完整刷新先加载 Snapshot，再从 `last_event_seq` 继续消费事件。
+- 事件端点先注册实时订阅，再读取历史事件，合并订阅期间产生的 pending 事件，最后进入实时模式。
+- sequence 在单个 Thread 内严格递增，前端用 `thread_id + sequence` 去重。
+- Cursor 已过期或无法继续时返回 `410 Gone`，客户端重新加载完整 Snapshot。
+- 网络断线只补发缺失事件，不重新执行 Agent，也不终止仍在运行的 Pi Session。
 - 用户停止通过显式 Agent Control 命令调用 Pi abort。
 - Stop 不依赖关闭浏览器流，因此可与恢复能力同时存在。
+- `PersistentResearchAgent` 仅在上述恢复契约真实可用时声明 `resumable: true`。
+
+Run 状态固定为：
+
+`pending → running → waiting_approval → running → completed | failed | cancelled`
+
+服务重启发现 Run 停留在 `waiting_approval` 时，将其转为终态 `interrupted_waiting_approval`；该状态只能通过创建带 `resumed_from_run_id` 的新 Run 续接，原 Run 不得重新进入 `running`。`ResearchRunStep` 继续遵循原规格状态机，不引入同名的第二套步骤状态。
 
 ## 6. 数据模型与不兼容迁移
 
 ### 6.1 新持久化对象
 
-- `threads`
-- `thread_messages`
-- `runs`
-- `agui_events`
-- `tool_calls`
-- `message_snapshots`
-- `evidence`
-- `artifacts`
-- `approval_requests`
+- `threads`：Thread 元数据、标题来源和手动标题锁定状态。
+- `runs`：Run 状态、幂等键和恢复关系。
+- `agui_events`：不可变的聊天和运行权威日志。
+- `tool_calls`：有副作用工具及其执行状态。
+- `message_snapshots`：从事件折叠得到的可重建检查点。
 
-正式 Schema 名可根据现有数据库命名规范调整，但对象职责不得合并为不可审计的 JSON 大表。
+不新增聊天层 `thread_messages`、`evidence`、`artifacts` 或第二套 `approval_requests`。Evidence、Artifact 和 Approval 继续使用研究内核领域表；AG-UI 事件只保存领域对象 ID、版本和生成当时的最小 UI 投影。
+
+权威关系固定为：
+
+- `agui_events` 是对话和 Run 重放的唯一权威来源。
+- `message_snapshots` 是派生缓存，保存 `thread_id`、`last_event_seq`、`messages_json`、`agent_state_json`、`schema_version` 和创建时间。
+- Snapshot 可由事件重建，不能独立修改聊天事实。
+- 研究内核表是 Evidence、Artifact、Approval 及其他正式研究资产的唯一权威来源。
+- 删除、压缩或分叉 Thread 不得级联删除已确认的研究资产。
+
+正式 Schema 名可根据现有数据库命名规范调整，但上述职责和权威关系不得改变。
 
 ### 6.2 开发期数据重置
 
@@ -293,9 +330,9 @@ Inspector 默认关闭，不使用固定三栏。
 
 标题策略：
 
-1. 创建时使用用户第一句话截断。
-2. 首次回答完成后允许 Agent 生成短标题。
-3. 用户手动修改后不得被自动覆盖。
+1. V1a 创建时使用用户第一句话确定性截断。
+2. 用户可以手动修改标题；修改后记录 `title_source = manual`。
+3. Agent 自动标题延后到后续版本，不属于本次验收。
 
 ### 8.3 对话时间线
 
@@ -330,7 +367,7 @@ Inspector 可调整宽度，并可进入独立阅读页。
 - 发送/停止按钮。
 - 快捷键提示。
 
-附件能力在真实实现前隐藏。Agent 运行时的新输入进入下一轮队列，不静默打断当前 Run。
+附件能力在真实实现前隐藏。V1a 同一 Thread 同时只允许一个主动 Run；运行期间禁用发送，只保留停止。消息排队与 steering 延后到后续版本。
 
 ### 8.6 响应式
 
@@ -366,6 +403,27 @@ Inspector 可调整宽度，并可进入独立阅读页。
 
 V1a 只将现有 `save_research_note` 接入真实审批链路；其他审批仅定义协议与组件状态。
 
+`save_research_note` 使用真正的 ask-user 式工具暂停：
+
+1. Pi 发起工具调用。
+2. 工具在 Python Research Service 创建持久化 Approval Request 和 `waiting_approval` Run Step，但不执行正式写入。
+3. Chat Backend 的 `ApprovalBroker` 以 `approval_id` 注册一个等待中的 Promise，并发出 AG-UI Approval 事件。
+4. 当前 Pi tool call 和当前 Run 等待该 Promise；Node 进程、其他 Thread 和 HTTP 请求继续运行。
+5. `POST /v1/approvals/:approvalId/decision` 持久化决定，然后 resolve 对应 Promise。
+6. 批准时使用原幂等键执行正式写入并返回 Tool Result；拒绝时返回结构化 rejected Tool Result，且不改变正式研究资产。
+7. Pi 在同一 Turn 中接收 Tool Result 并继续推理。
+
+页面刷新不会影响等待中的 Promise；前端重新加载 pending Approval 后仍可决定。
+
+若用户在 `waiting_approval` 时显式停止，Agent Control 必须在同一事务中把 Approval、关联 Run Step 和 Run 标记为 `cancelled`。`ApprovalBroker` 随后以结构化 cancelled Tool Result 结束等待并调用 Pi abort；该 Approval 不得再次决定或触发正式写入。
+
+服务进程重启后，内存 Promise 不存在，系统不得声称恢复原 Promise。启动恢复规则为：
+
+- 原 Run 标记 `interrupted_waiting_approval`，Approval 保持 pending。
+- 用户决定仍可被持久化，并以原幂等键确定性执行或拒绝操作。
+- 系统恢复 Pi Session，创建带 `resumed_from_run_id` 的新 Run，并注入结构化恢复结果继续后续 Turn。
+- 重复决定或恢复不得重复执行正式写入。
+
 ## 10. 错误处理
 
 - 连接错误：自动重连并从事件序号恢复。
@@ -375,6 +433,8 @@ V1a 只将现有 `save_research_note` 接入真实审批链路；其他审批仅
 - 协议错误：拒绝非法 AG-UI 事件并记录 Adapter 错误。
 - 渲染错误：Tool、Evidence、Artifact 使用局部 Error Boundary。
 - 用户停止：Run 标记 cancelled，保留停止前内容。
+- 审批等待：浏览器断开不取消；显式停止会原子取消 Approval、Run Step 和 Run，结束内存等待且不执行正式写入。
+- 审批恢复：进程重启后通过关联恢复 Run 续接，不伪造同一内存 tool call。
 
 ## 11. 测试策略
 
@@ -426,6 +486,7 @@ CopilotKit Headless
 - 工具过程与来源。
 - 停止。
 - 刷新恢复。
+- 审批暂停、刷新后批准、拒绝和进程重启降级恢复。
 - 打开 Inspector。
 - 错误降级。
 - 同一回复只渲染一次。
@@ -438,10 +499,13 @@ CopilotKit Headless
 4. 停止、刷新恢复和历史加载均可工作。
 5. 用户可看到 Codex 式进度、工具状态和最终回答。
 6. 引用和 Artifact 从聊天打开 Inspector。
-7. 任务标题可自动生成且不覆盖手动标题。
+7. 任务标题由首条用户消息确定性生成，且用户可以手动修改。
 8. 应用基础组件来自 `packages/ui`。
 9. 核心组件具有 Storybook 状态和视觉回归。
 10. 未实现模块不使用假数据或伪交互。
+11. `save_research_note` 在批准前不产生正式研究资产，批准后在同一存活 Run 中继续 Pi Turn。
+12. Chat Backend 重启后，pending Approval 可决定且正式写入保持幂等，续接 Run 关联原 Run。
+13. 审批等待期间显式停止会取消 Approval，之后提交决定返回冲突且不会执行正式写入。
 
 ## 13. 实施拆分
 
@@ -452,7 +516,8 @@ CopilotKit Headless
 - 锁定依赖版本。
 - 建立事件契约和 Pi Adapter。
 - 新建持久化 Schema 和显式重置命令。
-- 完成恢复、停止、重放和幂等测试。
+- 实现 `PersistentResearchAgent`、恢复端点和 capabilities。
+- 完成恢复、停止、审批暂停、重放和幂等测试。
 
 ### 阶段二：设计系统
 
