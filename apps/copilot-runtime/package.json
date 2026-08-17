@@ -1,0 +1,17 @@
+{
+  "name": "@ira/copilot-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ag-ui/client": "0.0.57",
+    "@ag-ui/core": "0.0.57",
+    "@copilotkit/runtime": "1.68.1"
+  },
+  "devDependencies": {
+    "tsx": "4.23.12"
+  }
+}
