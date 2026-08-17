@@ -52,5 +52,21 @@ fi
 
 IRA_TEST_MODE=1 "$RESEARCH_PYTHON" -m uvicorn research_service.app:create_app --factory --host 127.0.0.1 --port 8010 --app-dir "$ROOT_DIR/services/research" & PIDS+=("$!")
 IRA_RESEARCH_SERVICE_URL=http://127.0.0.1:8010 PORT=8020 pnpm --dir "$ROOT_DIR" --filter @ira/chat-backend dev & PIDS+=("$!")
+IRA_RESEARCH_SERVICE_URL=http://127.0.0.1:8010 PORT=8030 pnpm --dir "$ROOT_DIR" --filter @ira/copilot-runtime dev & PIDS+=("$!")
 pnpm --dir "$ROOT_DIR" --filter @ira/web dev --host 127.0.0.1 --port 5173 & PIDS+=("$!")
+
+for endpoint in "http://127.0.0.1:8010/health" "http://127.0.0.1:8020/health"; do
+  ready=0
+  for _ in $(seq 1 60); do
+    if curl -fsS "$endpoint" >/dev/null 2>&1; then ready=1; break; fi
+    sleep 0.2
+  done
+  if [[ "$ready" -ne 1 ]]; then echo "Timed out waiting for $endpoint" >&2; exit 1; fi
+done
+ready=0
+for _ in $(seq 1 60); do
+  if curl -fsS "http://127.0.0.1:8030/info" >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.2
+done
+if [[ "$ready" -ne 1 ]]; then echo "Timed out waiting for runtime discovery" >&2; exit 1; fi
 wait_for_any
