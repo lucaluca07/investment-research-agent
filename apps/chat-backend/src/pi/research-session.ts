@@ -19,7 +19,8 @@ type Model = ReturnType<ModelRuntime["getModels"]>[number];
 const RESEARCH_LEAD_PROMPT =
   "You are the Research Lead. Answer one Victory Giant Technology (胜宏科技) PCB research question using only the two provided research tools. Cite every factual claim and never use unavailable tools or invent evidence.";
 
-type SessionFactory = (options: Record<string, unknown>) => Promise<unknown>;
+type CreatedAgentSession = { session: unknown };
+type SessionFactory = (options: Record<string, unknown>) => Promise<CreatedAgentSession>;
 
 export type ResearchSessionOptions = {
   client?: ResearchClient;
@@ -65,7 +66,7 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
   });
   await resourceLoader.reload({ resolveProjectTrust: async () => true });
   const sessionFactory = options.createAgentSession ?? (createAgentSession as unknown as SessionFactory);
-  return sessionFactory({
+  const created = await sessionFactory({
     cwd,
     agentDir,
     sessionManager: SessionManager.create(cwd, sessionDir),
@@ -77,4 +78,5 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
     customTools: createResearchTools(client),
     resourceLoader,
   });
+  return created.session;
 }

@@ -11,8 +11,9 @@ describe("research-only pi session", () => {
     const setRuntimeApiKey = vi.fn();
     const selectedModel = { provider: "openai-compatible", id: "k3-256k" };
     const runtime = { setRuntimeApiKey, getModel: vi.fn().mockReturnValue(selectedModel) };
-    const createAgentSession = vi.fn().mockResolvedValue({ session: {} });
-    await createResearchSession({
+    const fakeSession = { prompt: vi.fn(), subscribe: vi.fn(), dispose: vi.fn() };
+    const createAgentSession = vi.fn().mockResolvedValue({ session: fakeSession });
+    const createdSession = await createResearchSession({
       client: {} as ResearchClient,
       sessionId: "kimi-chat",
       runtimeDir: "/tmp/ira-kimi-session-test",
@@ -25,6 +26,8 @@ describe("research-only pi session", () => {
     const sessionOptions = createAgentSession.mock.calls[0][0];
     expect(sessionOptions).toMatchObject({ model: selectedModel, thinkingLevel: "high", noTools: "builtin" });
     expect(JSON.parse(await readFile(`${sessionOptions.agentDir}/models.json`, "utf8")).providers["openai-compatible"]).toBeDefined();
+    expect(createdSession).toBe(fakeSession);
+    expect(createdSession).not.toHaveProperty("session");
   });
 
   it("fails before creating an agent session when the API key is missing", async () => {
