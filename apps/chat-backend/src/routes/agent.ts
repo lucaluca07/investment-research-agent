@@ -35,8 +35,9 @@ export async function registerAgentRoutes(
         const seq = event.sequence;
         if (typeof seq === "number" && seen.has(seq)) return;
         if (typeof seq === "number") seen.add(seq);
+        const id = typeof event.sequence === "number" ? event.sequence : seq;
         reply.raw.write(
-          `event: ${event.type}\ndata: ${JSON.stringify(event.data ?? event)}\n\n`,
+          `id: ${id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data ?? event)}\n\n`,
         );
       };
       let replaying = true;
