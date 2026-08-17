@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import { ResearchClient, ResearchClientError } from "./research-client.js";
@@ -6,6 +7,39 @@ import { createResearchTools } from "./pi/research-tools.js";
 import { createResearchSession } from "./pi/research-session.js";
 
 describe("research-only pi session", () => {
+  it("configures pi with the selected model and reasoning effort", async () => {
+    const setRuntimeApiKey = vi.fn();
+    const selectedModel = { provider: "openai-compatible", id: "k3-256k" };
+    const runtime = { setRuntimeApiKey, getModel: vi.fn().mockReturnValue(selectedModel) };
+    const createAgentSession = vi.fn().mockResolvedValue({ session: {} });
+    await createResearchSession({
+      client: {} as ResearchClient,
+      sessionId: "kimi-chat",
+      runtimeDir: "/tmp/ira-kimi-session-test",
+      environment: { KIMI_API_KEY: "secret" },
+      createModelRuntime: vi.fn().mockResolvedValue(runtime),
+      createAgentSession,
+    });
+    expect(setRuntimeApiKey).toHaveBeenCalledWith("openai-compatible", "secret");
+    expect(runtime.getModel).toHaveBeenCalledWith("openai-compatible", "k3-256k");
+    const sessionOptions = createAgentSession.mock.calls[0][0];
+    expect(sessionOptions).toMatchObject({ model: selectedModel, thinkingLevel: "high", noTools: "builtin" });
+    expect(JSON.parse(await readFile(`${sessionOptions.agentDir}/models.json`, "utf8")).providers["openai-compatible"]).toBeDefined();
+  });
+
+  it("fails before creating an agent session when the API key is missing", async () => {
+    const createAgentSession = vi.fn();
+    await expect(createResearchSession({ client: {} as ResearchClient, sessionId: "missing-key", environment: {}, createAgentSession })).rejects.toThrow(/API key/);
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("fails before creating an agent session when the configured model is unavailable", async () => {
+    const createAgentSession = vi.fn();
+    const runtime = { setRuntimeApiKey: vi.fn(), getModel: vi.fn().mockReturnValue(undefined) };
+    await expect(createResearchSession({ client: {} as ResearchClient, sessionId: "missing-model", environment: { KIMI_API_KEY: "key" }, createModelRuntime: vi.fn().mockResolvedValue(runtime), createAgentSession })).rejects.toThrow(/Configured model is unavailable/);
+    expect(createAgentSession).not.toHaveBeenCalled();
+  });
+
   it("rejects non-loopback research service URLs", () => {
     expect(() => new ResearchClient("https://example.com")).toThrow(/loopback/);
   });
@@ -62,8 +96,9 @@ describe("research-only pi session", () => {
       sessionId: "chat-1",
       runtimeDir: "/tmp/ira-task4-test",
       createAgentSession,
-      modelRuntime: {} as never,
+      modelRuntime: { setRuntimeApiKey: vi.fn(), getModel: vi.fn() } as never,
       model: {} as never,
+      environment: { KIMI_API_KEY: "test-key" },
     });
     const options = createAgentSession.mock.calls[0][0];
     expect(options.noTools).toBe("builtin");
@@ -82,8 +117,9 @@ describe("research-only pi session", () => {
       client: {} as ResearchClient,
       runtimeDir: "/tmp/ira-task4-isolation-test",
       createAgentSession,
-      modelRuntime: {} as never,
+      modelRuntime: { setRuntimeApiKey: vi.fn(), getModel: vi.fn() } as never,
       model: {} as never,
+      environment: { KIMI_API_KEY: "test-key" },
     };
     await createResearchSession({ ...common, sessionId: "chat-alpha" });
     await createResearchSession({ ...common, sessionId: "chat-beta" });
