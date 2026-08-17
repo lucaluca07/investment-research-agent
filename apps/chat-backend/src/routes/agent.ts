@@ -45,7 +45,9 @@ export async function registerAgentRoutes(
         if (replaying) pending.push(event);
         else write(event);
       });
-      for (const event of await client.listAguiEvents(threadId, 0))
+      const headerCursor = Number(request.headers["last-event-id"] ?? 0);
+      const queryCursor = Number((request.query as { after?: string }).after ?? 0);
+      for (const event of await client.listAguiEvents(threadId, Math.max(headerCursor || 0, queryCursor || 0)))
         write(event);
       replaying = false;
       for (const event of pending) write(event);
