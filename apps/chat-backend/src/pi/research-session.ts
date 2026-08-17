@@ -12,13 +12,15 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ResearchClient } from "../research-client.js";
 import { createResearchTools } from "./research-tools.js";
+import { loadModelConfig, writeModelDocument } from "./model-config.js";
 
 type Model = ReturnType<ModelRuntime["getModels"]>[number];
 
 const RESEARCH_LEAD_PROMPT =
   "You are the Research Lead. Answer one Victory Giant Technology (胜宏科技) PCB research question using only the two provided research tools. Cite every factual claim and never use unavailable tools or invent evidence.";
 
-type SessionFactory = (options: Record<string, unknown>) => Promise<unknown>;
+type CreatedAgentSession = { session: unknown };
+type SessionFactory = (options: Record<string, unknown>) => Promise<CreatedAgentSession>;
 
 export type ResearchSessionOptions = {
   client?: ResearchClient;
@@ -27,10 +29,14 @@ export type ResearchSessionOptions = {
   createAgentSession?: SessionFactory;
   modelRuntime?: ModelRuntime;
   model?: Model;
+  environment?: NodeJS.ProcessEnv;
+  createModelRuntime?: (options: { authPath: string; modelsPath: string; allowModelNetwork: boolean }) => Promise<ModelRuntime>;
 };
 
 export async function createResearchSession(options: ResearchSessionOptions): Promise<unknown> {
   if (!options.sessionId?.trim()) throw new Error("sessionId is required");
+  const environment = options.environment ?? process.env;
+  const modelConfig = loadModelConfig(environment);
   const runtimeDir = options.runtimeDir ?? process.env.IRA_RUNTIME_DIR ?? path.join(process.cwd(), ".ira-runtime");
   const sessionKey = createHash("sha256").update(options.sessionId).digest("hex").slice(0, 32);
   const sessionRoot = path.join(runtimeDir, "sessions", sessionKey);
@@ -40,8 +46,12 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
   await Promise.all([mkdir(cwd, { recursive: true }), mkdir(agentDir, { recursive: true }), mkdir(sessionDir, { recursive: true })]);
 
   const client = options.client ?? new ResearchClient(process.env.IRA_RESEARCH_SERVICE_URL ?? "http://127.0.0.1:8000");
-  const modelRuntime = options.modelRuntime ?? await createModelRuntime(agentDir);
-  const model = options.model ?? selectModel(modelRuntime);
+  const modelsPath = await writeModelDocument(agentDir, modelConfig);
+  const runtimeFactory = options.createModelRuntime ?? ((runtimeOptions) => ModelRuntime.create(runtimeOptions));
+  const modelRuntime = options.modelRuntime ?? await runtimeFactory({ authPath: path.join(agentDir, "auth.json"), modelsPath, allowModelNetwork: false });
+  await modelRuntime.setRuntimeApiKey(modelConfig.providerId, modelConfig.apiKey);
+  const model = options.model ?? modelRuntime.getModel(modelConfig.providerId, modelConfig.modelId);
+  if (!model) throw new Error(`Configured model is unavailable: ${modelConfig.modelId}`);
   const settingsManager = SettingsManager.inMemory();
   const resourceLoader: ResourceLoader = new DefaultResourceLoader({
     cwd,
@@ -56,35 +66,17 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
   });
   await resourceLoader.reload({ resolveProjectTrust: async () => true });
   const sessionFactory = options.createAgentSession ?? (createAgentSession as unknown as SessionFactory);
-  return sessionFactory({
+  const created = await sessionFactory({
     cwd,
     agentDir,
     sessionManager: SessionManager.create(cwd, sessionDir),
     settingsManager,
     modelRuntime,
     model,
+    thinkingLevel: modelConfig.reasoningEffort,
     noTools: "builtin",
     customTools: createResearchTools(client),
     resourceLoader,
   });
-}
-
-async function createModelRuntime(agentDir: string): Promise<ModelRuntime> {
-  const runtime = await ModelRuntime.create({
-    authPath: path.join(agentDir, "auth.json"),
-    modelsPath: path.join(agentDir, "models.json"),
-    allowModelNetwork: false,
-  });
-  const provider = process.env.IRA_PI_PROVIDER;
-  const apiKey = process.env.IRA_PI_API_KEY;
-  if (provider && apiKey) await runtime.setRuntimeApiKey(provider, apiKey);
-  return runtime;
-}
-
-function selectModel(runtime: ModelRuntime): Model {
-  const provider = process.env.IRA_PI_PROVIDER;
-  const modelId = process.env.IRA_PI_MODEL;
-  const model = provider && modelId ? runtime.getModel(provider, modelId) : runtime.getModels()[0];
-  if (!model) throw new Error("No pi model is configured for the research session");
-  return model;
+  return created.session;
 }

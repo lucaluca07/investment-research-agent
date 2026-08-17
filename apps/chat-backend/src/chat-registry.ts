@@ -1,5 +1,6 @@
 import { createResearchSession } from "./pi/research-session.js";
 import type { ResearchClient } from "./research-client.js";
+import { DEFAULT_MODEL_ID } from "./pi/model-config.js";
 
 export type ChatEvent = { id: number; type: string; data: Record<string, unknown> };
 type SessionLike = {
@@ -82,7 +83,8 @@ export class ChatRegistry {
     state.queue = previousQueue.then(async () => {
       if (state.activeRunId) throw new Error("chat already has an active run");
       const session = await this.getSession(chatId, state);
-      const run = await this.researchClient.createRun({ chat_id: chatId, pi_session_id: state.sessionId, model: process.env.IRA_PI_MODEL ?? "configured-model", idempotency_key: idempotencyKey });
+      const modelId = process.env.LLM_MODEL?.trim() || DEFAULT_MODEL_ID;
+      const run = await this.researchClient.createRun({ chat_id: chatId, pi_session_id: state.sessionId, model: modelId, idempotency_key: idempotencyKey });
       const runId = String(run.id);
       if (run.status === "succeeded" || run.status === "cancelled") {
         result = { status: "replayed", runId };

@@ -4,6 +4,29 @@ import { createApp } from "../app.js";
 import { ResearchClientError } from "../research-client.js";
 
 describe("chat routes", () => {
+  it("persists the default and LLM_MODEL override", async () => {
+    const original = process.env.LLM_MODEL;
+    const createRun = vi.fn().mockResolvedValue({ id: "run-model", chat_id: "chat-model", pi_session_id: "pi", model: "k3-256k", status: "running", error: null, created_at: new Date().toISOString() });
+    const app = await createApp({
+      researchClient: { createChat: vi.fn().mockResolvedValue({ id: "chat-model", pi_session_id: "pi" }), createRun, appendMessage: vi.fn().mockResolvedValue({ id: "message-1", role: "user", content: "hello" }) } as never,
+      sessionFactory: vi.fn().mockResolvedValue({ prompt: vi.fn(), subscribe: vi.fn().mockReturnValue(() => {}), dispose: vi.fn() }),
+    });
+    try {
+      delete process.env.LLM_MODEL;
+      await app.inject({ method: "POST", url: "/v1/chats" });
+      await app.inject({ method: "POST", url: "/v1/chats/chat-model/messages", payload: { content: "hello", idempotency_key: "model-default" } });
+      expect(createRun.mock.calls[0][0].model).toBe("k3-256k");
+      process.env.LLM_MODEL = "research-model";
+      const appOverride = await createApp({ researchClient: { listChats: vi.fn().mockResolvedValue([{ id: "chat-override", pi_session_id: "pi" }]), createRun, appendMessage: vi.fn().mockResolvedValue({ id: "message-2", role: "user", content: "hello" }) } as never, sessionFactory: vi.fn().mockResolvedValue({ prompt: vi.fn(), subscribe: vi.fn().mockReturnValue(() => {}), dispose: vi.fn() }) });
+      await appOverride.inject({ method: "POST", url: "/v1/chats/chat-override/messages", payload: { content: "hello", idempotency_key: "model-override" } });
+      expect(createRun.mock.calls[1][0].model).toBe("research-model");
+      await appOverride.close();
+    } finally {
+      if (original === undefined) delete process.env.LLM_MODEL; else process.env.LLM_MODEL = original;
+      await app.close();
+    }
+  });
+
   it("lists persisted chats", async () => {
     const app = await createApp({ researchClient: { listChats: vi.fn().mockResolvedValue([{ id: "chat-1", pi_session_id: "pi-1" }]) } as never, sessionFactory: vi.fn() });
     const response = await app.inject({ method: "GET", url: "/v1/chats" });
