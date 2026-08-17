@@ -17,6 +17,9 @@ importers:
 
   apps/chat-backend:
     dependencies:
+      '@ag-ui/core':
+        specifier: 0.0.57
+        version: 0.0.57
       '@earendil-works/pi-coding-agent':
         specifier: 0.84.2
         version: 0.84.2(@modelcontextprotocol/sdk@1.30.0(@cfworker/json-schema@4.1.1)(zod@3.25.76))(ws@8.21.3)(zod@3.25.76)
