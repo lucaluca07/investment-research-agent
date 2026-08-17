@@ -79,6 +79,8 @@ CopilotKit Headless 负责消费 AG-UI、维护运行状态和提供 Agent 交�
 
 前端通过 CopilotKit Runtime-backed 路径连接 Agent。仓库自托管 Copilot Runtime，由 Runtime 注册指向 Fastify AG-UI Endpoint 的 Agent；不使用 Enterprise `selfManagedAgents`，也不使用 `agents__unsafe_dev_only`。
 
+首个实现版本固定使用 `@copilotkit/* = 1.68.1`，并遵循其锁定的 `@ag-ui/* = 0.0.57`，不得分别追随 latest。升级必须先通过 Interrupt/Resume 兼容性契约测试。
+
 Copilot Runtime 负责 CopilotKit 标准 Agent 发现、请求代理和 AG-UI 流传递；Fastify 继续负责 Pi Session、协议适配、持久化恢复和业务安全边界。Runtime 不保存第二份权威消息或研究状态。
 
 Runtime 注册一个服务端 `PersistentResearchAgent extends AbstractAgent`。其实现严格遵循锁定 SDK 的 `protected run(input)`、可选 `protected connect(input)`、`abortRun()` 和 `getCapabilities()` 契约：新 Run 代理到 Fastify 标准 AG-UI 执行端点；连接恢复从 Fastify Snapshot/Cursor 接口重建事件流。该 Agent 只做传输和恢复，不折叠或另存消息。
@@ -99,7 +101,7 @@ shadcn/ui 作为源码分发基础，组件进入 `packages/ui` 并由本仓库�
 - Pi：模型会话和研究工具循环。
 - Fastify Chat Backend：协议适配、会话控制和流式出口。
 - Python Research Service：DuckDB 唯一写入者。
-- DuckDB：Thread、Run、Event、Message、Evidence、Artifact 和 Approval。
+- DuckDB：Thread、Run、Event、Snapshot、Tool Operation、Agent Checkpoint、Evidence、Artifact 和 Approval。
 
 ## 4. 总体架构
 
@@ -128,13 +130,15 @@ Python Research Service ── DuckDB
 
 1. 用户在 Composer 发送问题。
 2. CopilotKit Headless 创建 Thread Run 请求。
-3. Chat Backend 先将 Run input 和 Run 状态持久化为 AG-UI 事件。
+3. Chat Backend 校验 Message ID 和客户端幂等键，在单个 Python 事务中创建 Run、持久化包含规范化 input 的 `RUN_STARTED`，并追加包含新用户消息的 `MESSAGES_SNAPSHOT`。
 4. Chat Backend 创建或恢复对应 Pi Session。
 5. Pi Adapter 将 Pi 输出转换为 AG-UI 标准事件。
 6. 关键事件立即写入 Research Service；文本增量由 Event Batcher 合并后批量写入。
 7. 已持久化事件再经 Copilot Runtime 对浏览器广播；消息结束前强制刷新待写文本批次。
 8. 前端根据稳定 ID 更新同一个 UI Message。
 9. Run 完成后按策略生成可重建的 Message Snapshot 检查点。
+
+相同客户端幂等键的重复请求返回原 Run ID 和已有事件位置，不重复创建 Run，也不再次追加用户消息。
 
 ### 5.2 Pi 事件映射
 
@@ -144,7 +148,8 @@ Python Research Service ── DuckDB
 Pi text start/delta/end  → AG-UI text message events
 Pi tool start            → TOOL_CALL_START
 Pi tool arguments        → TOOL_CALL_ARGS
-Pi tool result           → TOOL_CALL_RESULT / TOOL_CALL_END
+Pi tool arguments end    → TOOL_CALL_END
+Pi tool result           → TOOL_CALL_RESULT
 Run lifecycle            → RUN_STARTED / RUN_FINISHED / RUN_ERROR
 Research progress        → STEP_STARTED / STEP_FINISHED 或 ACTIVITY 事件
 Evidence                 → CUSTOM evidence event
@@ -175,7 +180,7 @@ Approval                 → RUN_FINISHED interrupt outcome + resume input
 - sequence 在单个 Thread 内严格递增，前端用 `thread_id + sequence` 去重。
 - V1 不压缩 `agui_events`；只有 Schema 不兼容或开发数据库被显式重置时返回 `410 Gone`，客户端重新加载完整 Snapshot。
 - 网络断线只补发缺失事件，不重新执行 Agent，也不终止仍在运行的 Pi Session。
-- 用户停止通过显式 Agent Control 命令调用 Pi abort。
+- 用户停止通过显式 Agent Control 命令调用 Pi abort；Fastify 随后输出 `RUN_ERROR { code: "run_cancelled" }`，数据库 Run 状态记为 `cancelled`，UI 将该错误码中性显示为“已停止”。
 - Stop 不依赖关闭浏览器流，因此可与恢复能力同时存在。
 - Runtime Agent 仅在上述恢复契约真实可用时声明 transport resumable capability。
 
@@ -192,6 +197,7 @@ Run 状态固定为：
 - Run、Tool、Approval、State Snapshot、Message Snapshot 和 Message End 立即持久化。
 - 连续 Text Message Content 由 Fastify 按不超过 50ms 或 2KB 的阈值合并，以先达到者为准。
 - Research Service 提供批量追加接口，并在单个 DuckDB 事务中分配连续 Thread sequence。
+- 同一 Thread 的事件必须经过串行写入队列；任意非 Text Message Content 事件到达前，先 flush 当前 Message 的待写文本批次。
 - Message End、Run Finished、Run Error、Abort 和进程正常退出前必须强制 flush。
 - 广播只能发生在对应批次持久化成功后；持久化失败不得向 UI 暴露未保存事件。
 
@@ -202,8 +208,10 @@ Run 状态固定为：
 - `threads`：Thread 元数据、标题来源和手动标题锁定状态。
 - `runs`：Run 状态、幂等键和恢复关系。
 - `agui_events`：不可变的聊天和运行权威日志。
-- `tool_calls`：有副作用工具及其执行状态。
+- `tool_calls`：AG-UI Tool Call 协议、展示和审计记录，不作为副作用执行权威。
 - `tool_operations`：受审批副作用的输入、幂等键、决定和执行状态。
+- `agent_checkpoints`：Interrupt 边界上的 Pi Session 与协议恢复指针。
+- `resume_receipts`：Interrupt 响应的规范化内容和幂等结果。
 - `message_snapshots`：从事件折叠得到的可重建检查点。
 
 不新增聊天层 `thread_messages`、`evidence`、`artifacts` 或第二套 `approval_requests`。Evidence、Artifact 和 Approval 继续使用研究内核领域表；AG-UI 事件只保存领域对象 ID、版本和生成当时的最小 UI 投影。
@@ -215,6 +223,7 @@ Run 状态固定为：
 - Snapshot 可由事件重建，不能独立修改聊天事实。
 - 研究内核表是 Evidence、Artifact、Approval 及其他正式研究资产的唯一权威来源。
 - `tool_operations` 是受审批副作用是否已经执行的唯一权威来源，Approval 只记录用户决定。
+- `agent_checkpoints` 是 Pi 恢复位置的权威来源；AG-UI Snapshot 只恢复协议和 UI 状态。
 - 删除、压缩或分叉 Thread 不得级联删除已确认的研究资产。
 
 正式 Schema 名可根据现有数据库命名规范调整，但上述职责和权威关系不得改变。
@@ -424,12 +433,13 @@ V1a 只将现有 `save_research_note` 接入真实审批链路；其他审批仅
 
 1. Pi 发起工具调用并产生稳定 `tool_call_id`。
 2. Fastify 调用 Python Research Service，原子创建 Approval、Tool Operation 和 `waiting_approval` Run Step，但不执行正式写入。
-3. Pi Adapter 输出恢复所需的 `STATE_SNAPSHOT` 和 `MESSAGES_SNAPSHOT`，Research Service 将原 Run Step 从 `waiting_approval` 终结为 `interrupted`。
+3. Pi Adapter 输出恢复所需的 `STATE_SNAPSHOT` 和 `MESSAGES_SNAPSHOT`；Research Service 持久化 Agent Checkpoint，并将原 Run Step 从 `waiting_approval` 终结为 `interrupted`。
 4. 当前 Run 输出 `RUN_FINISHED`，其 `outcome.type = interrupt`；Interrupt 使用 `reason = tool_call`、关联原 `tool_call_id`，并声明审批响应 Schema。
 5. 用户决定后，前端创建新 Run；`RunAgentInput.resume` 使用同一 Thread 并覆盖全部开放 Interrupt。批准和拒绝均使用 `status = resolved`，在 payload 中以 `approved` 区分；放弃才使用 `status = cancelled`。
-6. 新 Run 先由确定性恢复控制器处理 Tool Operation：批准则按原幂等键执行，拒绝或取消则不写入。
-7. 新 Run 针对原 `tool_call_id` 输出 `TOOL_CALL_RESULT`，不重新输出同一工具的 Start/Args/End。
-8. Pi Session 接收结构化 Tool Result 后继续后续 Turn。
+6. Fastify 只能调用 Research Service 的单一 `resolve_interrupt` 命令；该命令在一个事务中校验 Interrupt、nonce 和响应 Schema，写入 Approval decision、迁移 Tool Operation、保存 Resume Receipt，并返回规范化恢复输入。
+7. 新 Run 先由确定性恢复控制器处理 Tool Operation：批准则按原幂等键执行，拒绝或取消则不写入。
+8. 新 Run 针对原 `tool_call_id` 输出 `TOOL_CALL_RESULT`，不重新输出同一工具的 Start/Args/End。
+9. Pi Session 接收结构化 Tool Result 后继续后续 Turn。
 
 Approval 记录用户决定；Tool Operation 记录副作用执行状态。状态机固定为：
 
@@ -447,6 +457,15 @@ Approval 记录用户决定；Tool Operation 记录副作用执行状态。状�
 
 审批可以等待任意时长，页面刷新和所有服务重启都不会改变恢复流程。存在开放 Interrupt 时，不接受普通新消息；请求必须携带覆盖全部开放 Interrupt 的 `resume`。
 
+Agent Checkpoint 至少保存：
+
+- `checkpoint_id`、`thread_id` 和 `interrupted_run_id`。
+- `pi_session_id`、`pi_session_revision` 和经过验证的 Session 存储位置引用。
+- 原 `tool_call_id`、`tool_operation_id` 和 Pi 内部 Tool Call ID 映射。
+- `messages_last_event_seq`、`state_snapshot_event_seq` 和创建时间。
+
+恢复顺序固定为：读取并校验 Agent Checkpoint → 调用 `resolve_interrupt` → 处理 Tool Operation → 恢复 Pi Session → 验证原 Tool Call → 注入结构化 Tool Result → 启动后续 Turn。若 Pi Session 缺失、损坏或版本不兼容，系统创建标记为 `recovery_fallback` 的新 Turn，将原消息、Tool Call、用户决定和确定性执行结果作为结构化上下文注入；不得宣称恢复了原 Pi Turn，也不得重新执行已完成副作用。
+
 ## 10. 错误处理
 
 - 连接错误：自动重连并从事件序号恢复。
@@ -455,7 +474,7 @@ Approval 记录用户决定；Tool Operation 记录副作用执行状态。状�
 - 持久化错误：停止广播，避免显示未保存结果。
 - 协议错误：拒绝非法 AG-UI 事件并记录 Adapter 错误。
 - 渲染错误：Tool、Evidence、Artifact 使用局部 Error Boundary。
-- 用户停止：仍在运行的 Run 标记 cancelled，保留停止前内容并输出明确终止事件。
+- 用户停止：仍在运行的 Run 标记 cancelled，保留停止前内容并输出 `RUN_ERROR { code: "run_cancelled" }`。
 - 审批等待：原 Run 已是 interrupted 终态；用户放弃通过 `resume.status = cancelled` 创建收尾 Run，不执行正式写入。
 - 审批恢复：所有恢复都通过新 Run 和持久化 Tool Operation 完成，不依赖内存 tool call。
 
@@ -466,6 +485,10 @@ Approval 记录用户决定；Tool Operation 记录副作用执行状态。状�
 - Pi 事件转换为合法 AG-UI 事件。
 - ID 一致性和状态顺序。
 - 未知或非法事件快速失败。
+- 固定版本的 Copilot Runtime 能发现 Research Agent。
+- `RUN_FINISHED.outcome.interrupts` 能完整穿透 Runtime。
+- CopilotKit `useInterrupt` 产生符合 Schema 的完整 `resume[]`。
+- 恢复 Run 能针对原 Tool Call 输出 Result，而不重复 Start/Args/End。
 
 ### 11.2 Reducer 与幂等
 
@@ -474,6 +497,8 @@ Approval 记录用户决定；Tool Operation 记录副作用执行状态。状�
 - 断线重放。
 - Snapshot 与增量合并。
 - 完成消息唯一性。
+- 文本批次与 Tool、Approval、State 等关键事件的跨批次顺序。
+- 重复 Run 请求不重复追加用户消息。
 
 ### 11.3 组件与 Storybook
 
@@ -511,6 +536,7 @@ CopilotKit Headless
 - 停止。
 - 刷新恢复。
 - 原生 Interrupt、刷新后批准、拒绝、取消和全服务重启恢复。
+- Pi Session 损坏时的 `recovery_fallback`，且副作用不重复执行。
 - 打开 Inspector。
 - 错误降级。
 - 同一回复只渲染一次。
@@ -531,6 +557,9 @@ CopilotKit Headless
 12. 审批决定通过新 Run 的标准 resume 输入提交，续接 Run 关联原 Run 和原 Tool Call。
 13. 所有服务重启后 pending Approval 仍可决定，Tool Operation 保持幂等且不会重复写入。
 14. 审批取消后 Tool Operation 进入 cancelled，之后提交其他决定返回冲突且不会执行正式写入。
+15. Run 创建事务将用户消息写入权威事件日志，重复幂等请求不会产生第二条消息。
+16. Stop 以 `RUN_ERROR code=run_cancelled` 收口，UI 显示“已停止”而非普通错误。
+17. 正常恢复与 Pi Session 损坏降级恢复均通过自动化测试，且不会重复执行副作用。
 
 ## 13. 实施拆分
 
@@ -542,7 +571,7 @@ CopilotKit Headless
 - 建立事件契约和 Pi Adapter。
 - 新建持久化 Schema 和显式重置命令。
 - 建立自托管 Copilot Runtime 和 Fastify AG-UI Agent Endpoint。
-- 实现 Event Batcher、恢复端点和 capabilities。
+- 实现 Event Batcher、Agent Checkpoint、`resolve_interrupt`、恢复端点和 capabilities。
 - 完成恢复、停止、Interrupt/Resume、重放和幂等测试。
 
 ### 阶段二：设计系统
