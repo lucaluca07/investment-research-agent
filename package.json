@@ -8,7 +8,7 @@
   "scripts": {
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "dev:agui": "bash scripts/dev-v1a.sh",
+    "dev:agui": "bash scripts/dev-agui.sh",
     "db:reset:dev": "bash scripts/reset-dev-db.sh",
     "test:e2e": "vitest run tests/e2e/ag-ui-runtime.test.ts --exclude .worktrees/**",
     "verify": "pnpm test && pnpm typecheck && pnpm --filter @ira/web build && pnpm test:e2e"

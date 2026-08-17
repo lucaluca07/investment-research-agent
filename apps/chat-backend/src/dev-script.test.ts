@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const scriptPath = resolve(import.meta.dirname, "../../../scripts/dev-v1a.sh");
+const scriptPath = resolve(import.meta.dirname, "../../../scripts/dev-agui.sh");
 
-describe("dev-v1a startup script", () => {
+describe("dev-agui startup script", () => {
   it("starts uvicorn through the project virtual environment", async () => {
     const script = await readFile(scriptPath, "utf8");
 

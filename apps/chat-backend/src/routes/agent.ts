@@ -73,9 +73,10 @@ export async function registerAgentRoutes(
   app.post("/v1/threads/:threadId/runs/stream", streamRun);
   app.get("/v1/threads/:threadId/events", async (request) => {
     const q = request.query as { after?: string };
+    const headerCursor = Number(request.headers["last-event-id"] ?? 0);
     return client.listAguiEvents(
       (request.params as { threadId: string }).threadId,
-      Number(q.after ?? 0),
+      Math.max(Number(q.after ?? 0), Number.isFinite(headerCursor) ? headerCursor : 0),
     );
   });
   app.get("/v1/threads/:threadId/state", async (request) =>

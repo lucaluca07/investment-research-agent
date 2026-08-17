@@ -42,4 +42,19 @@ describe("AG-UI runtime process contract", () => {
     expect(body.map((e) => e.sequence)).toEqual([...body].sort((a, b) => a - b).map((e) => e.sequence));
     await app.close();
   });
+
+  it("replays only events after Last-Event-ID with monotonic ids", async () => {
+    const client = fakeClient();
+    const app = await createApp({ researchClient: client, sessionFactory: async (id) => new FakeAgentSession(id) as any });
+    await app.ready();
+    await app.inject({ method: "POST", url: "/v1/threads/thread-2/runs", payload: { input: "research", idempotency_key: "cursor" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const all = await app.inject({ method: "GET", url: "/v1/threads/thread-2/events?after=0" });
+    const events = all.json() as Array<{ sequence: number }>;
+    expect(events.length).toBeGreaterThan(0);
+    const cursor = events[0]!.sequence;
+    const resumed = await app.inject({ method: "GET", url: "/v1/threads/thread-2/events", headers: { "last-event-id": String(cursor) } });
+    expect((resumed.json() as Array<{ sequence: number }>).every((event) => event.sequence > cursor)).toBe(true);
+    await app.close();
+  });
 });
