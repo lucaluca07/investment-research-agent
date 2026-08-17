@@ -12,7 +12,7 @@ export class RunController {
   private readonly active = new Map<string, Active>();
   private readonly sessions = new Map<string, Session>();
   private readonly starting = new Set<string>();
-  private readonly openInterrupts = new Map<string, Set<string>>();
+  private readonly openInterrupts = new Map<string, Map<string, string>>();
   constructor(private readonly options: RunControllerOptions) {}
 
   subscribe(threadId: string, listener: (event: unknown) => void): () => void {
@@ -21,19 +21,22 @@ export class RunController {
   }
 
   getActive(threadId: string): AguiRun | undefined { return this.active.get(threadId)?.run; }
-  registerInterrupt(threadId: string, interruptId: string): void { let set=this.openInterrupts.get(threadId); if(!set){set=new Set();this.openInterrupts.set(threadId,set);} set.add(interruptId); }
+  registerInterrupt(threadId: string, interruptId: string, runId: string): void { let set=this.openInterrupts.get(threadId); if(!set){set=new Map();this.openInterrupts.set(threadId,set);} set.set(interruptId, runId); }
   async resume(request: ResumeRequest): Promise<Awaited<ReturnType<ResumeController["resume"]>>> { const result=await (this.options.resumeController ?? new ResumeController(this.options.client)).resume(request); return result; }
   async resumeActive(request: Omit<ResumeRequest, "session"|"emit">): Promise<Awaited<ReturnType<ResumeController["resume"]>>> {
     const active = this.active.get(request.threadId); if (!active) throw new Error("thread has no active run");
     const result = await (this.options.resumeController ?? new ResumeController(this.options.client)).resume({ ...request, session: active.session, emit: async (event) => { await active.writer.write(event); } });
+    this.openInterrupts.get(request.threadId)?.delete(request.decision.interrupt_id);
+    if (!this.openInterrupts.get(request.threadId)?.size) this.openInterrupts.delete(request.threadId);
     await active.session.prompt(`Continue interrupted research operation ${result.operation_id}`);
     return result;
   }
 
   async start(threadId: string, input: unknown, idempotencyKey: string, model?: string): Promise<{ run: AguiRun; replayed: boolean; last_event_seq: number; done: Promise<void> }> {
-    if (this.openInterrupts.get(threadId)?.size) {
+    const pendingInterrupts = this.openInterrupts.get(threadId);
+    if (pendingInterrupts?.size) {
       const message = "open interrupt requires resume";
-      const runId = `rejected-${Date.now()}`;
+      const runId = pendingInterrupts.values().next().value as string;
       await this.options.client.appendAguiEvents(threadId, runId, [{ type: EventType.RUN_ERROR, data: { runId, message, code: "open_interrupt" } }]);
       throw new Error(message);
     }

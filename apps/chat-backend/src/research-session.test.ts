@@ -7,6 +7,12 @@ import { createResearchTools } from "./pi/research-tools.js";
 import { createResearchSession, getResearchSessionMetadata, validateSessionStoragePath } from "./pi/research-session.js";
 
 describe("research-only pi session", () => {
+  it("provides an operation status adapter with a typed durable response", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "op-1", status: "succeeded", result: { ok: true } }), { status: 200 }));
+    const client = new ResearchClient("http://127.0.0.1:8000", { fetch });
+    await expect(client.operationStatus("thread-1", "op-1")).resolves.toEqual({ id: "op-1", status: "succeeded", result: { ok: true } });
+    expect(fetch).toHaveBeenCalledWith(expect.objectContaining({ pathname: "/v1/internal/operations/status" }), expect.objectContaining({ method: "POST" }));
+  });
   it("exposes validated session metadata", async () => {
     const s = await createResearchSession({ client:{} as ResearchClient, sessionId:"meta", runtimeDir:"/tmp/meta", createAgentSession:vi.fn().mockResolvedValue({session:{}}), modelRuntime:{setRuntimeApiKey:vi.fn(),getModel:vi.fn().mockReturnValue({})} as never, model:{} as never, environment:{KIMI_API_KEY:"x"} });
     expect(getResearchSessionMetadata(s)?.sessionId).toBe("meta");

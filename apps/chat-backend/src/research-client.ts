@@ -30,6 +30,7 @@ export type CreateRunRequest = { input: unknown; idempotency_key: string; model?
 export type CreateRunResult = { run: AguiRun; replayed: boolean; last_event_seq: number };
 export type ThreadState = { thread: AguiThread; last_event_seq: number; runs: AguiRun[] };
 export type InterruptDecision = { interrupt_id: string; run_id: string; operation_id: string; checkpoint_id: string; receipt_id: string; status: string; payload: { approved: boolean } };
+export type ToolOperation = { id: string; status: "waiting_approval"|"approved"|"executing"|"succeeded"|"failed"|"rejected"|"cancelled"; result?: unknown };
 
 export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
@@ -73,6 +74,7 @@ export class ResearchClient {
   async requestInterrupt(input: { thread_id: string; interrupt_id: string; run_id: string; nonce: string; tool_name?: string; input?: unknown; last_event_seq?: number }): Promise<Record<string, unknown>> { return this.post("v1/internal/interrupts", input) as Promise<Record<string, unknown>>; }
   async resolveInterrupt(thread_id: string, interrupt_id: string, input: { nonce: string; status: "resolved" | "cancelled"; payload: { approved: boolean }; payload_hash?: string }): Promise<InterruptDecision> { return parseInterrupt(await this.post(`v1/internal/interrupts/${encodeURIComponent(thread_id)}/${encodeURIComponent(interrupt_id)}/resolve`, input)); }
   async beginOperation(thread_id: string, operation_id: string): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/begin", { thread_id, operation_id }) as Promise<Record<string, unknown>>; }
+  async operationStatus(thread_id: string, operation_id: string): Promise<ToolOperation> { return parseToolOperation(await this.post("v1/internal/operations/status", { thread_id, operation_id })); }
   async completeOperation(thread_id: string, operation_id: string, result: unknown): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/complete", { thread_id, operation_id, result }) as Promise<Record<string, unknown>>; }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
@@ -142,3 +144,4 @@ function parseAguiRun(value: unknown): AguiRun { const s=["pending","running","c
 function parseAguiEvent(value: unknown): AguiEvent { if(!isObject(value)||typeof value.thread_id!=="string"||typeof value.sequence!=="number"||!Number.isInteger(value.sequence)||value.sequence<0||typeof value.run_id!=="string"||typeof value.type!=="string"||value.type.length===0||!isObject(value.data)) throw new ResearchClientError("invalid AG-UI event response",200,value); return value as unknown as AguiEvent; }
 function validateSequences(events: AguiEvent[]): AguiEvent[] { for(let i=1;i<events.length;i++) if(events[i].sequence!==events[i-1].sequence+1) throw new ResearchClientError("non-contiguous AG-UI event sequence",200,events); return events; }
 function parseInterrupt(value: unknown): InterruptDecision { if(!isObject(value)||typeof value.interrupt_id!=="string"||typeof value.run_id!=="string"||typeof value.operation_id!=="string"||typeof value.checkpoint_id!=="string"||typeof value.receipt_id!=="string"||!isObject(value.payload)||typeof value.payload.approved!=="boolean") throw new ResearchClientError("invalid interrupt response",200,value); return value as unknown as InterruptDecision; }
+function parseToolOperation(value: unknown): ToolOperation { const statuses=["waiting_approval","approved","executing","succeeded","failed","rejected","cancelled"]; if(!isObject(value)||typeof value.id!=="string"||!statuses.includes(String(value.status))) throw new ResearchClientError("invalid operation response",200,value); return value as ToolOperation; }

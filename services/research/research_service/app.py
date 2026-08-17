@@ -89,6 +89,16 @@ class ResolveInterruptRequest(RequestModel):
     payload_hash: str | None = None
 
 
+class OperationReferenceRequest(RequestModel):
+    thread_id: str = Field(min_length=1)
+    operation_id: str = Field(min_length=1)
+
+
+class CompleteOperationRequest(OperationReferenceRequest):
+    result: Any = None
+    error: Any = None
+
+
 def create_app(database_path: str = ":memory:", test_mode: bool = False) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -139,16 +149,26 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @app.post("/v1/internal/operations/begin")
-    def begin_operation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        return interrupts(request).begin_operation(str(payload["thread_id"]), str(payload["operation_id"]))
+    def begin_operation(payload: OperationReferenceRequest, request: Request) -> dict[str, Any]:
+        try:
+            return interrupts(request).begin_operation(payload.thread_id, payload.operation_id)
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @app.post("/v1/internal/operations/status")
-    def operation_status(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        return interrupts(request).operation_status(str(payload["thread_id"]), str(payload["operation_id"]))
+    def operation_status(payload: OperationReferenceRequest, request: Request) -> dict[str, Any]:
+        try:
+            return interrupts(request).operation_status(payload.thread_id, payload.operation_id)
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/v1/internal/operations/complete")
-    def complete_operation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
-        return interrupts(request).complete_operation(str(payload["thread_id"]), str(payload["operation_id"]), result=payload.get("result"))
+    def complete_operation(payload: CompleteOperationRequest, request: Request) -> dict[str, Any]:
+        try:
+            if payload.error is not None:
+                return interrupts(request).complete_operation(payload.thread_id, payload.operation_id, error=payload.error)
+            return interrupts(request).complete_operation(payload.thread_id, payload.operation_id, result=payload.result)
+        except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @app.post("/v1/threads", status_code=status.HTTP_201_CREATED)
     def create_thread(payload: dict[str, Any], request: Request) -> dict[str, Any]:

@@ -25,7 +25,12 @@ export class ResumeController {
     if (checkpoint.session_storage_path) validateSessionStoragePath(process.env.IRA_RUNTIME_DIR ?? `${process.cwd()}/.ira-runtime`, checkpoint.session_storage_path);
     if (checkpoint.tool_call_id && checkpoint.tool_name === undefined) throw new Error("checkpoint tool mapping missing");
     const current = await this.operations.status(request.threadId, checkpoint.operation_id);
-    if (current.status === "succeeded") return { operation_id: checkpoint.operation_id, result: current.result, fallback: false, events: [] };
+    if (current.status === "succeeded") {
+      const replay = { type: EventType.TOOL_CALL_RESULT, toolCallId: checkpoint.tool_call_id ?? checkpoint.operation_id, content: JSON.stringify(current.result), role: "tool" } as AGUIEvent;
+      await request.emit(replay);
+      await request.session.inject?.(`Resume result: ${JSON.stringify(current.result)}`);
+      return { operation_id: checkpoint.operation_id, result: current.result, fallback: false, events: [replay] };
+    }
     // Resolve first so the Research Service remains the atomic owner of operation state.
     const nonce = String((checkpoint as any).nonce ?? (decision as any).nonce ?? "");
     const resolved = await this.operations.resolve(request.threadId, checkpoint.interrupt_id, nonce, decision.status === "cancelled" ? "cancelled" : "resolved", decision.payload);

@@ -45,4 +45,12 @@ describe("RunController", () => {
     await expect(controller.start("thread-1", "hello", "key")).rejects.toThrow("subscribe failed");
     expect(c.transitionAguiRun).toHaveBeenCalledWith("run-1", "failed", { message: "subscribe failed", retryable: false }, false);
   });
+
+  it("publishes a durable run error on the interrupted run when ordinary input arrives", async () => {
+    const c = client();
+    const controller = new RunController({ client: c, sessionFactory: async () => ({ prompt: async () => undefined, subscribe: () => () => undefined }) });
+    controller.registerInterrupt("thread-1", "interrupt-1", "run-interrupted");
+    await expect(controller.start("thread-1", "ordinary input", "key")).rejects.toThrow(/open interrupt/);
+    expect(c.appendAguiEvents).toHaveBeenCalledWith("thread-1", "run-interrupted", [expect.objectContaining({ type: EventType.RUN_ERROR })]);
+  });
 });
