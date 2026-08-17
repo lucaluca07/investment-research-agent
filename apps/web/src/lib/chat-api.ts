@@ -16,22 +16,21 @@ export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: 
     return response.json() as Promise<T>;
   };
   return {
-    listChats: () => request("/v1/chats"),
-    createChat: () => request("/v1/chats", { method: "POST", body: "{}" }),
-    getMessages: (chatId) => request(`/v1/chats/${encodeURIComponent(chatId)}/messages`),
-    sendMessage: (chatId, content, idempotencyKey) => request(`/v1/chats/${encodeURIComponent(chatId)}/messages`, { method: "POST", body: JSON.stringify({ content, idempotency_key: idempotencyKey }) }),
-    stop: async (chatId) => { await request(`/v1/chats/${encodeURIComponent(chatId)}/stop`, { method: "POST" }); },
+    listChats: async () => (await request<Array<{ id: string }>>("/v1/threads")).map((thread) => ({ id: thread.id, pi_session_id: thread.id })),
+    createChat: async () => { const thread = await request<{ id: string }>("/v1/threads", { method: "POST", body: "{}" }); return { id: thread.id, pi_session_id: thread.id }; },
+    getMessages: async (chatId) => ({ messages: [] }),
+    sendMessage: async (chatId, content, idempotencyKey) => { const result = await request<{ run: { id: string } }>(`/v1/threads/${encodeURIComponent(chatId)}/runs`, { method: "POST", body: JSON.stringify({ input: content, idempotency_key: idempotencyKey }) }); return { runId: result.run.id }; },
+    stop: async (chatId) => { await request(`/v1/threads/${encodeURIComponent(chatId)}/stop`, { method: "POST" }); },
     subscribe: (chatId, onEvent, onConnection) => {
       let lastId = 0;
       let source: EventSource | undefined;
       let stopped = false;
       const connect = () => {
         if (stopped) return;
-        source = sourceFactory(`/v1/chats/${encodeURIComponent(chatId)}/events${lastId ? `?lastEventId=${lastId}` : ""}`);
+        source = sourceFactory(`/v1/threads/${encodeURIComponent(chatId)}/runs/stream${lastId ? `?after=${lastId}` : ""}`);
         source.onopen = () => onConnection(true);
         source.onerror = () => { onConnection(false); source?.close(); setTimeout(connect, 250); };
-        const eventNames = ["message.delta", "message.completed", "citation", "tool.started", "tool.completed", "run.status", "error"];
-        for (const name of eventNames) source.addEventListener(name, (message) => { const eventMessage = message as MessageEvent; const event = { id: Number(eventMessage.lastEventId), type: name, data: JSON.parse(eventMessage.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } });
+        source.onmessage = (message) => { const eventMessage = message as MessageEvent; const event = { id: Number(eventMessage.lastEventId), type: eventMessage.type || "message", data: JSON.parse(eventMessage.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } };
       };
       connect();
       return () => { stopped = true; source?.close(); };

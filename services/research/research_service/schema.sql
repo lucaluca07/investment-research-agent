@@ -145,34 +145,6 @@ CREATE TABLE IF NOT EXISTS resume_receipts (
   UNIQUE(thread_id, interrupt_id, status, payload_hash)
 );
 
--- Legacy V1a tables remain readable until Task 9 removes their protocol path.
-CREATE TABLE IF NOT EXISTS chats (
-  id VARCHAR PRIMARY KEY,
-  pi_session_id VARCHAR,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-  id VARCHAR PRIMARY KEY,
-  chat_id VARCHAR NOT NULL,
-  role VARCHAR NOT NULL,
-  content VARCHAR NOT NULL,
-  idempotency_key VARCHAR,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (chat_id) REFERENCES chats(id)
-  , UNIQUE(chat_id, idempotency_key)
-);
-
-CREATE TABLE IF NOT EXISTS chat_events (
-  chat_id VARCHAR NOT NULL,
-  event_id BIGINT NOT NULL,
-  event_type VARCHAR NOT NULL,
-  data_json JSON NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (chat_id, event_id),
-  FOREIGN KEY (chat_id) REFERENCES chats(id)
-);
-
 CREATE TABLE IF NOT EXISTS research_runs (
   id VARCHAR PRIMARY KEY,
   chat_id VARCHAR NOT NULL,
@@ -182,7 +154,7 @@ CREATE TABLE IF NOT EXISTS research_runs (
   status VARCHAR NOT NULL DEFAULT 'running' CHECK (status IN ('running','succeeded','failed','cancelled')),
   error_json JSON,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (chat_id) REFERENCES chats(id)
+  FOREIGN KEY (chat_id) REFERENCES threads(id)
   , UNIQUE(chat_id, idempotency_key)
 );
 
