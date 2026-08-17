@@ -31,8 +31,11 @@ const defaults = {
 const reasoningEfforts: readonly ReasoningEffort[] = ["off", "minimal", "low", "medium", "high"];
 
 export function loadModelConfig(environment: NodeJS.ProcessEnv): ModelConfig {
-  const apiKey = environment.LLM_API_KEY?.trim() || environment.KIMI_API_KEY?.trim();
-  if (!apiKey) throw new Error("LLM_API_KEY or KIMI_API_KEY is required: API key is missing");
+  const compatProfile = environment.LLM_COMPAT_PROFILE === undefined
+    ? defaults.compatProfile
+    : parseCompatProfile(environment.LLM_COMPAT_PROFILE);
+  const apiKey = environment.LLM_API_KEY?.trim() || (compatProfile === "kimi" ? environment.KIMI_API_KEY?.trim() : undefined);
+  if (!apiKey) throw new Error(compatProfile === "kimi" ? "LLM_API_KEY or KIMI_API_KEY is required: API key is missing" : "LLM_API_KEY is required for the openai compatibility profile");
 
   const baseUrl = environment.LLM_BASE_URL?.trim() || defaults.baseUrl;
   validateBaseUrl(baseUrl);
@@ -47,10 +50,6 @@ export function loadModelConfig(environment: NodeJS.ProcessEnv): ModelConfig {
   const supportsVision = environment.LLM_SUPPORTS_VISION === undefined
     ? defaults.supportsVision
     : parseBoolean(environment.LLM_SUPPORTS_VISION);
-  const compatProfile = environment.LLM_COMPAT_PROFILE === undefined
-    ? defaults.compatProfile
-    : parseCompatProfile(environment.LLM_COMPAT_PROFILE);
-
   return { providerId: MODEL_PROVIDER_ID, baseUrl, apiKey, modelId, contextWindow, reasoningEffort, supportsVision, compatProfile };
 }
 

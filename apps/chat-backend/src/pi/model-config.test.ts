@@ -34,6 +34,10 @@ describe("model configuration", () => {
     expect(loadModelConfig({ LLM_API_KEY: "key", LLM_BASE_URL: "https://llm.example.com/v1", LLM_MODEL: "research-model", LLM_CONTEXT_LENGTH: "131072", LLM_REASONING_EFFORT: "medium", LLM_SUPPORTS_VISION: "false", LLM_COMPAT_PROFILE: "openai" })).toMatchObject({ baseUrl: "https://llm.example.com/v1", modelId: "research-model", contextWindow: 131072, reasoningEffort: "medium", supportsVision: false, compatProfile: "openai" });
   });
 
+  it("does not fall back to KIMI_API_KEY for the openai compatibility profile", () => {
+    expect(() => loadModelConfig({ KIMI_API_KEY: "kimi-secret", LLM_COMPAT_PROFILE: "openai" })).toThrow(/LLM_API_KEY/);
+  });
+
   it.each([
     [{ KIMI_API_KEY: "" }, /API key/],
     [{ KIMI_API_KEY: "key", LLM_BASE_URL: "http://example.com/v1" }, /HTTPS or loopback/],
