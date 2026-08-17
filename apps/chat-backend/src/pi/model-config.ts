@@ -1,4 +1,6 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
+import { chmod } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export const MODEL_PROVIDER_ID = "openai-compatible";
@@ -71,9 +73,11 @@ export function buildModelDocument(config: ModelConfig): Record<string, unknown>
 export async function writeModelDocument(agentDir: string, config: ModelConfig): Promise<string> {
   await mkdir(agentDir, { recursive: true });
   const path = join(agentDir, "models.json");
-  const temporaryPath = `${path}.tmp`;
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(buildModelDocument(config), null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await chmod(temporaryPath, 0o600);
   await rename(temporaryPath, path);
+  await chmod(path, 0o600);
   return path;
 }
 

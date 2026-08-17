@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -17,6 +17,17 @@ describe("model configuration", () => {
     const text = await readFile(path, "utf8");
     expect(text).not.toContain("never-write-this");
     expect(JSON.parse(text)).toMatchObject({ providers: { "openai-compatible": { api: "openai-completions", baseUrl: "https://api.kimi.com/coding/v1", compat: { deferredToolsMode: "kimi" }, models: [{ id: "k3-256k", contextWindow: 262144 }] } } });
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("atomically handles concurrent writes with private permissions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ira-model-config-concurrent-"));
+    const configs = Array.from({ length: 12 }, (_, index) => loadModelConfig({ KIMI_API_KEY: `secret-${index}`, LLM_MODEL: `model-${index}` }));
+    const paths = await Promise.all(configs.map((config) => writeModelDocument(directory, config)));
+    expect(new Set(paths)).toEqual(new Set([join(directory, "models.json")]));
+    const document = JSON.parse(await readFile(join(directory, "models.json"), "utf8")) as { providers: Record<string, { models: Array<{ id: string }> }> };
+    expect(configs.map((config) => config.modelId)).toContain(document.providers["openai-compatible"]!.models[0]!.id);
+    expect((await stat(join(directory, "models.json"))).mode & 0o777).toBe(0o600);
   });
 
   it("accepts a standard OpenAI-compatible override", () => {
