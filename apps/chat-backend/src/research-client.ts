@@ -72,6 +72,8 @@ export class ResearchClient {
   async transitionAguiRun(run_id: string, status: AguiRun["status"], error?: Record<string, unknown>, emit_event = true): Promise<AguiRun> { return parseAguiRun(await this.post(`v1/runs/${encodeURIComponent(run_id)}/transition`, { status, error, emit_event })); }
   async requestInterrupt(input: { thread_id: string; interrupt_id: string; run_id: string; nonce: string; tool_name?: string; input?: unknown; last_event_seq?: number }): Promise<Record<string, unknown>> { return this.post("v1/internal/interrupts", input) as Promise<Record<string, unknown>>; }
   async resolveInterrupt(thread_id: string, interrupt_id: string, input: { nonce: string; status: "resolved" | "cancelled"; payload: { approved: boolean }; payload_hash?: string }): Promise<InterruptDecision> { return parseInterrupt(await this.post(`v1/internal/interrupts/${encodeURIComponent(thread_id)}/${encodeURIComponent(interrupt_id)}/resolve`, input)); }
+  async beginOperation(thread_id: string, operation_id: string): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/begin", { thread_id, operation_id }) as Promise<Record<string, unknown>>; }
+  async completeOperation(thread_id: string, operation_id: string, result: unknown): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/complete", { thread_id, operation_id, result }) as Promise<Record<string, unknown>>; }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
     return this.post("v1/tools/query-company-snapshot", { ticker }) as Promise<CompanySnapshot>;

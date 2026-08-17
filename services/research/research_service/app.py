@@ -138,6 +138,18 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
         except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InterruptError as exc: raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
+    @app.post("/v1/internal/operations/begin")
+    def begin_operation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        return interrupts(request).begin_operation(str(payload["thread_id"]), str(payload["operation_id"]))
+
+    @app.post("/v1/internal/operations/status")
+    def operation_status(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        return interrupts(request).operation_status(str(payload["thread_id"]), str(payload["operation_id"]))
+
+    @app.post("/v1/internal/operations/complete")
+    def complete_operation(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+        return interrupts(request).complete_operation(str(payload["thread_id"]), str(payload["operation_id"]), result=payload.get("result"))
+
     @app.post("/v1/threads", status_code=status.HTTP_201_CREATED)
     def create_thread(payload: dict[str, Any], request: Request) -> dict[str, Any]:
         return agui(request).create_thread(payload.get("id"), payload.get("title", ""))

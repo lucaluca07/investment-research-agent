@@ -33,6 +33,20 @@ export type ResearchSessionOptions = {
   createModelRuntime?: (options: { authPath: string; modelsPath: string; allowModelNetwork: boolean }) => Promise<ModelRuntime>;
 };
 
+export type ResearchSessionMetadata = { sessionId: string; revision: number; storagePath: string };
+
+export function validateSessionStoragePath(runtimeDir: string, storagePath: string): string {
+  const root = path.resolve(runtimeDir, "sessions");
+  const resolved = path.resolve(storagePath);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Pi session storage path must be inside .ira-runtime/sessions");
+  return resolved;
+}
+
+export function getResearchSessionMetadata(session: unknown): ResearchSessionMetadata | undefined {
+  return (session as { researchSessionMetadata?: ResearchSessionMetadata } | null)?.researchSessionMetadata;
+}
+
 export async function createResearchSession(options: ResearchSessionOptions): Promise<unknown> {
   if (!options.sessionId?.trim()) throw new Error("sessionId is required");
   const environment = options.environment ?? process.env;
@@ -78,5 +92,11 @@ export async function createResearchSession(options: ResearchSessionOptions): Pr
     customTools: createResearchTools(client),
     resourceLoader,
   });
+  const metadata: ResearchSessionMetadata = { sessionId: options.sessionId, revision: 0, storagePath: validateSessionStoragePath(runtimeDir, sessionDir) };
+  if (created.session && typeof created.session === "object") {
+    Object.defineProperty(created.session, "researchSessionMetadata", { value: metadata, enumerable: false, configurable: true });
+    const target = created.session as Record<string, unknown>;
+    if (typeof target.restoreAndContinue !== "function") target.restoreAndContinue = async (revision: number, text: string) => { metadata.revision = revision; if (typeof target.prompt === "function") await (target.prompt as (value: string) => Promise<void>)(text); };
+  }
   return created.session;
 }

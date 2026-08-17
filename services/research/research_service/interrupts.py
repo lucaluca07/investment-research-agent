@@ -86,6 +86,12 @@ class InterruptStore:
             c.execute("UPDATE tool_operations SET status='executing' WHERE id=?", [operation_id])
         return {"id": operation_id, "status": "executing"}
 
+    def operation_status(self, thread_id: str, operation_id: str) -> dict[str, Any]:
+        row = self.database.connection.execute("SELECT status,result_json FROM tool_operations WHERE id=? AND thread_id=?", [operation_id, thread_id]).fetchone()
+        if not row: raise InterruptNotFound("operation not found")
+        result = json.loads(row[1]) if row[1] else None
+        return {"id": operation_id, "status": row[0], "result": result}
+
     def complete_operation(self, thread_id: str, operation_id: str, *, result: Any = None, error: Any = None) -> dict[str, Any]:
         with self.database.transaction() as c:
             row = c.execute("SELECT id,status FROM tool_operations WHERE id=? AND thread_id=?", [operation_id, thread_id]).fetchone()

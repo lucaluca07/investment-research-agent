@@ -4,9 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 import { ResearchClient, ResearchClientError } from "./research-client.js";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { createResearchTools } from "./pi/research-tools.js";
-import { createResearchSession } from "./pi/research-session.js";
+import { createResearchSession, getResearchSessionMetadata, validateSessionStoragePath } from "./pi/research-session.js";
 
 describe("research-only pi session", () => {
+  it("exposes validated session metadata", async () => {
+    const s = await createResearchSession({ client:{} as ResearchClient, sessionId:"meta", runtimeDir:"/tmp/meta", createAgentSession:vi.fn().mockResolvedValue({session:{}}), modelRuntime:{setRuntimeApiKey:vi.fn(),getModel:vi.fn().mockReturnValue({})} as never, model:{} as never, environment:{KIMI_API_KEY:"x"} });
+    expect(getResearchSessionMetadata(s)?.sessionId).toBe("meta");
+    expect(() => validateSessionStoragePath("/tmp/meta", "/etc/passwd")).toThrow();
+  });
   it("configures pi with the selected model and reasoning effort", async () => {
     const setRuntimeApiKey = vi.fn();
     const selectedModel = { provider: "openai-compatible", id: "k3-256k" };
