@@ -2,9 +2,30 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-StepStatus = Literal[
-    "pending", "running", "succeeded", "failed", "waiting_approval", "cancelled"
+RunStatus = Literal[
+    "pending", "running", "completed", "interrupted", "failed", "cancelled"
 ]
+StepStatus = Literal[
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "waiting_approval",
+    "interrupted",
+    "cancelled",
+]
+OperationStatus = Literal[
+    "proposed",
+    "waiting_approval",
+    "approved",
+    "executing",
+    "succeeded",
+    "failed",
+    "rejected",
+    "cancelled",
+]
+
+LegacyRunStatus = Literal["running", "succeeded", "failed", "cancelled"]
 
 
 @dataclass(frozen=True)
@@ -14,7 +35,7 @@ class ResearchRun:
     pi_session_id: str
     model: str
     created_at: datetime | None = None
-    status: Literal["running", "succeeded", "failed", "cancelled"] = "running"
+    status: LegacyRunStatus = "running"
     error: dict[str, Any] | None = None
     replayed: bool = False
 
@@ -49,3 +70,31 @@ class ChatMessage:
     role: str
     content: str
     created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class Thread:
+    id: str
+    title: str = ""
+    title_source: str = "initial"
+    title_locked: bool = False
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class AguiRun:
+    id: str
+    thread_id: str
+    idempotency_key: str
+    status: RunStatus = "pending"
+    model: str | None = None
+    resumed_from_run_id: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ToolOperation:
+    id: str
+    idempotency_key: str
+    status: OperationStatus = "proposed"
+    thread_id: str | None = None

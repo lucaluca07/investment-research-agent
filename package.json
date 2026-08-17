@@ -9,6 +9,7 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "dev:v1a": "bash scripts/dev-v1a.sh",
+    "db:reset:dev": "bash scripts/reset-dev-db.sh",
     "test:e2e": "vitest run tests/e2e/v1a-chat.test.ts --exclude .worktrees/**",
     "verify": "pnpm test && pnpm typecheck && pnpm --filter @ira/web build && pnpm test:e2e"
   },
