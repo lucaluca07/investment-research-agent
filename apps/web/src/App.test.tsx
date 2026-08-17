@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 import type { ChatApi } from "./lib/chat-api.js";
 import { createChatApi } from "./lib/chat-api.js";
+import type { WorkbenchRuntime } from "./App.js";
 
 function fakeApi(): ChatApi { return { listChats: vi.fn().mockResolvedValue([]), createChat: vi.fn().mockResolvedValue({ id: "chat-1", pi_session_id: "pi-1" }), getMessages: vi.fn().mockResolvedValue({ messages: [] }), sendMessage: vi.fn().mockResolvedValue({ runId: "run-1" }), stop: vi.fn(), subscribe: vi.fn().mockReturnValue(() => {}) }; }
 
@@ -71,5 +72,54 @@ describe("web chat", () => {
   it("stops successfully without an error and returns to send state", async () => {
     let onEvent: ((event: any) => void) | undefined; const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "chat-stop", pi_session_id: "pi" }]); api.subscribe = vi.fn((_id, event) => { onEvent = event; return () => {}; }); api.stop = vi.fn().mockResolvedValue(undefined);
     render(<App api={api} />); await screen.findByRole("button", { name: "chat-stop" }); await waitFor(() => expect(api.subscribe).toHaveBeenCalled()); onEvent?.({ id: 1, type: "run.status", data: { run_id: "run-stop", status: "running" } }); await waitFor(() => expect(screen.getByRole("button", { name: "停止" })).toBeTruthy()); fireEvent.click(screen.getByRole("button", { name: "停止" })); await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeTruthy()); expect(api.stop).toHaveBeenCalledWith("chat-stop"); expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("clears event-derived inspector records when switching threads", async () => {
+    let onEvent: ((event: any) => void) | undefined; const api = fakeApi();
+    api.listChats = vi.fn().mockResolvedValue([{ id: "thread-a", pi_session_id: "a" }, { id: "thread-b", pi_session_id: "b" }]);
+    api.subscribe = vi.fn((_id, event) => { onEvent = event; return () => {}; });
+    render(<App api={api} />); await screen.findByRole("button", { name: "thread-b" });
+    onEvent?.({ id: 1, type: "citation", data: { document_id: "doc-a", published_at: "2026-08-14" } });
+    expect(await screen.findByRole("link", { name: "2026-08-14" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "thread-b" }));
+    await waitFor(() => expect(screen.queryByRole("link", { name: "2026-08-14" })).toBeNull());
+  });
+
+  it("accepts artifact, approval and interrupt data from the runtime adapter", async () => {
+    const resolve = vi.fn();
+    const runtime: WorkbenchRuntime = {
+      threadId: "runtime-thread",
+      inspectorRecords: [
+        { kind: "artifact", id: "report-1", title: "PCB 报告", body: "报告正文", version: "v1" },
+        { kind: "approval", id: "approval-1", runId: "run-1", impact: "保存报告", decision: "待处理" },
+      ],
+      interrupts: [{ runId: "run-1", interruptId: "approval-1", schema: { properties: { ticker: { type: "string" } } } }],
+      onResolveInterrupt: resolve,
+      onCancelInterrupt: vi.fn(),
+      onRefreshInterrupts: vi.fn(),
+    };
+    const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "runtime-thread", pi_session_id: "pi" }]);
+    render(<App api={api} runtime={runtime} />); await screen.findByText("开始一项研究");
+    fireEvent.click(screen.getByRole("button", { name: "PCB 报告" })); expect(screen.getByText("报告正文")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("ticker"), { target: { value: "300476.SZ" } });
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+    await waitFor(() => expect(resolve).toHaveBeenCalledWith(expect.anything(), { approved: true, ticker: "300476.SZ" }));
+  });
+
+  it("hides runtime artifacts and interrupts after switching to another thread", async () => {
+    const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "thread-a", pi_session_id: "a" }, { id: "thread-b", pi_session_id: "b" }]);
+    const runtime: WorkbenchRuntime = {
+      threadId: "thread-a",
+      inspectorRecords: [{ kind: "artifact", id: "a-report", title: "A 线程报告", body: "A 正文" }],
+      interrupts: [{ runId: "run-a", interruptId: "approval-a" }],
+      onResolveInterrupt: vi.fn(), onCancelInterrupt: vi.fn(), onRefreshInterrupts: vi.fn(),
+    };
+    render(<App api={api} runtime={runtime} />); await screen.findByRole("button", { name: "thread-b" });
+    expect(screen.getByRole("button", { name: "A 线程报告" })).toBeTruthy();
+    expect(screen.getByLabelText("待处理审批")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "thread-b" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "A 线程报告" })).toBeNull());
+    expect(screen.queryByLabelText("待处理审批")).toBeNull();
+    expect(screen.getByRole("button", { name: "发送" })).toBeTruthy();
   });
 });
