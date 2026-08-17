@@ -113,9 +113,10 @@ class InterruptStore:
         """Return only the immutable, service-recorded resume context for an interrupt."""
         row = self.database.connection.execute(
             "SELECT cp.id,cp.run_id,cp.tool_call_id,cp.pi_session_id,cp.last_event_seq,cp.agent_state_json,"
-            "op.id,op.tool_name,op.input_json,e.event_type,e.payload_json "
+            "op.id,op.tool_name,op.input_json,e.event_type,e.payload_json,r.input_json "
             "FROM agent_checkpoints cp JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
             "JOIN agui_events e ON e.thread_id=cp.thread_id AND e.sequence=cp.last_event_seq "
+            "JOIN runs r ON r.id=cp.run_id "
             "WHERE cp.thread_id=? AND cp.interrupt_id=?",
             [thread_id, interrupt_id],
         ).fetchone()
@@ -123,12 +124,16 @@ class InterruptStore:
             raise InterruptNotFound("interrupt checkpoint not found")
         state = json.loads(row[5]) if isinstance(row[5], str) else row[5]
         input_value = json.loads(row[8]) if isinstance(row[8], str) else row[8]
+        original_input = json.loads(row[11]) if isinstance(row[11], str) else row[11]
+        messages = original_input.get("messages", []) if isinstance(original_input, dict) else original_input if isinstance(original_input, list) else []
+        event_data = json.loads(row[10]) if isinstance(row[10], str) else row[10]
+        evidence = event_data.get("citations", []) if isinstance(event_data, dict) else []
         session = state.get("session")
         return {
             "checkpoint_id": row[0], "interrupt_id": interrupt_id, "run_id": row[1],
             "operation_id": row[6], "tool_call_id": row[2], "tool_name": row[7],
             "input": input_value, "nonce": state.get("nonce"), "last_event_seq": row[4],
-            "last_event": {"type": row[9], "data": json.loads(row[10]) if isinstance(row[10], str) else row[10]},
+            "last_event": {"type": row[9], "data": event_data}, "messages": messages, "evidence": evidence,
             "session": session if session else None,
         }
 

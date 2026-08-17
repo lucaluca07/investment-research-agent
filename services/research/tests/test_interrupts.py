@@ -59,6 +59,8 @@ def test_checkpoint_is_durable_and_includes_server_recorded_pi_metadata():
     assert loaded["session"] == {
         "session_id": "pi-session", "revision": 7, "storage_ref": "sessions/abc/session",
     }
+    assert loaded["messages"] == []
+    assert loaded["evidence"] == []
 
 
 def test_checkpoint_rejects_client_controlled_or_escaping_storage_refs():

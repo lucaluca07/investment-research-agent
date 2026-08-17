@@ -38,7 +38,7 @@ export async function registerAgentRoutes(app: FastifyInstance, client: Research
       const checkpoint = await client.getInterruptCheckpoint(threadId, interruptId);
       return await controller.resumeRecovery({
         threadId,
-        checkpointReader: async () => ({ ...checkpoint, session_id: checkpoint.session?.session_id, session_revision: checkpoint.session?.revision, session_storage_ref: checkpoint.session?.storage_ref }),
+        checkpointReader: async () => ({ ...checkpoint, messages: checkpoint.messages ?? [], evidence: checkpoint.evidence ?? [], session_id: checkpoint.session?.session_id, session_revision: checkpoint.session?.revision, session_storage_ref: checkpoint.session?.storage_ref }),
         decision: { interrupt_id: checkpoint.interrupt_id, run_id: checkpoint.run_id, operation_id: checkpoint.operation_id, checkpoint_id: checkpoint.checkpoint_id, receipt_id: "", status: body.status, payload: { approved: body.payload.approved } },
       });
     } catch (error) { return reply.code(error instanceof Error && /active|checkpoint|match|approved|open/i.test(error.message) ? 409 : 500).send({ detail: error instanceof Error ? error.message : "cannot resume" }); }
