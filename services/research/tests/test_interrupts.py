@@ -67,3 +67,13 @@ def test_checkpoint_rejects_client_controlled_or_escaping_storage_refs():
         store.request_interrupt("t", "i", run_id=run_id, nonce="n", pi_session_storage_ref="/tmp/session")
     with pytest.raises(InterruptError):
         store.request_interrupt("t", "i", run_id=run_id, nonce="n", pi_session_storage_ref="sessions/../secret")
+
+
+def test_open_interrupts_are_durable_across_store_instances():
+    db, run_id = setup_store()
+    InterruptStore(db).request_interrupt("t", "i", run_id=run_id, nonce="n")
+    opened = InterruptStore(db).open_interrupts("t")
+    assert len(opened) == 1
+    assert opened[0]["interrupt_id"] == "i"
+    assert opened[0]["run_id"] == run_id
+    assert opened[0]["operation_id"]

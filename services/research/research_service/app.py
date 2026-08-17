@@ -152,6 +152,10 @@ def create_app(database_path: str = ":memory:", test_mode: bool = False) -> Fast
             return interrupts(request).get_checkpoint(thread_id, interrupt_id)
         except InterruptNotFound as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/v1/internal/interrupts/{thread_id}")
+    def open_interrupts(thread_id: str, request: Request) -> list[dict[str, Any]]:
+        return interrupts(request).open_interrupts(thread_id)
+
     @app.post("/v1/internal/interrupts/{thread_id}/{interrupt_id}/resolve")
     def resolve_interrupt(thread_id: str, interrupt_id: str, payload: ResolveInterruptRequest, request: Request) -> dict[str, Any]:
         try:

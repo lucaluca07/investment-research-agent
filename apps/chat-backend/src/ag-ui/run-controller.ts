@@ -5,7 +5,7 @@ import type { AguiRun, ResearchClient } from "../research-client.js";
 import { ResumeController, type ResumeRequest } from "./resume-controller.js";
 
 type Session = { prompt(text: string): Promise<void>; subscribe(listener: (event: unknown) => void): () => void; abort?: () => Promise<void> | void };
-export type RunControllerOptions = { client: ResearchClient; sessionFactory?: (threadId: string) => Promise<Session>; resumeController?: ResumeController };
+export type RunControllerOptions = { client: ResearchClient; sessionFactory?: (threadId: string) => Promise<Session>; resumeController?: ResumeController; operationExecutor?: (toolName: string | undefined, input: unknown) => Promise<unknown> };
 type Active = { run: AguiRun; session: Session; writer: EventWriter; unsubscribe: () => void; listeners: Set<(event: unknown) => void>; cancelled: boolean; terminal: boolean; eventWrites: Promise<void>; done: Promise<void> };
 
 export class RunController {
@@ -22,18 +22,31 @@ export class RunController {
 
   getActive(threadId: string): AguiRun | undefined { return this.active.get(threadId)?.run; }
   registerInterrupt(threadId: string, interruptId: string, runId: string): void { let set=this.openInterrupts.get(threadId); if(!set){set=new Map();this.openInterrupts.set(threadId,set);} set.set(interruptId, runId); }
-  async resume(request: ResumeRequest): Promise<Awaited<ReturnType<ResumeController["resume"]>>> { const result=await this.resumer().resume(request); return result; }
-  async resumeActive(request: Omit<ResumeRequest, "session"|"emit">): Promise<Awaited<ReturnType<ResumeController["resume"]>>> {
-    const active = this.active.get(request.threadId); if (!active) throw new Error("thread has no active run");
-    const result = await this.resumer().resume({ ...request, session: active.session, emit: async (event) => { await active.writer.write(event); } });
-    this.openInterrupts.get(request.threadId)?.delete(request.decision.interrupt_id);
-    if (!this.openInterrupts.get(request.threadId)?.size) this.openInterrupts.delete(request.threadId);
-    await active.session.prompt(`Continue interrupted research operation ${result.operation_id}`);
+  async resume(request: ResumeRequest): Promise<Awaited<ReturnType<ResumeController["resume"]>>> { return this.resumer().resume(request); }
+  async resumeRecovery(request: Omit<ResumeRequest, "createRecoveryRun" | "execute" | "emit">): Promise<Awaited<ReturnType<ResumeController["resume"]>>> {
+    const result = await this.resumer().resume({
+      ...request,
+      createRecoveryRun: async (context) => {
+        const created = await this.options.client.createAguiRun(request.threadId, context, `recovery:${request.decision.receipt_id || request.decision.checkpoint_id}`);
+        return { id: created.run.id };
+      },
+      execute: async (input, toolName) => {
+        if (!this.options.operationExecutor) throw new Error("no server-side operation executor is configured");
+        return this.options.operationExecutor(toolName, input);
+      },
+      emit: async (runId, event) => {
+        const writer = new EventWriter({ threadId: request.threadId, runId, appendEventBatch: (t, r, events) => this.options.client.appendAguiEvents(t, r, events), emit: () => undefined });
+        await writer.write(event); await writer.flush();
+        if (event.type === EventType.RUN_FINISHED) await this.options.client.transitionAguiRun(runId, "completed", undefined, false);
+        if (event.type === EventType.RUN_ERROR) await this.options.client.transitionAguiRun(runId, "failed", { message: (event as any).message ?? "Recovery failed", retryable: false }, false);
+      },
+    });
     return result;
   }
 
   async start(threadId: string, input: unknown, idempotencyKey: string, model?: string): Promise<{ run: AguiRun; replayed: boolean; last_event_seq: number; done: Promise<void> }> {
-    const pendingInterrupts = this.openInterrupts.get(threadId);
+    const persistedInterrupts = await this.options.client.listOpenInterrupts?.(threadId) ?? [];
+    const pendingInterrupts = persistedInterrupts.length ? new Map(persistedInterrupts.map((item: any) => [item.interrupt_id, item.run_id])) : this.openInterrupts.get(threadId);
     if (pendingInterrupts?.size) {
       const message = "open interrupt requires resume";
       const runId = pendingInterrupts.values().next().value as string;
@@ -117,7 +130,7 @@ export class RunController {
   }
 
   private async getSession(threadId: string): Promise<Session> { const cached = this.sessions.get(threadId); if (cached) return cached; const session = await (this.options.sessionFactory ? this.options.sessionFactory(threadId) : Promise.reject(new Error("sessionFactory is required"))); this.sessions.set(threadId, session); return session; }
-  private resumer(): ResumeController { return this.options.resumeController ?? new ResumeController(this.options.client, { resolve: async (threadId, interruptId, nonce, status, payload) => this.options.client.resolveInterrupt(threadId, interruptId, { nonce, status, payload }), status: (threadId, operationId) => this.options.client.operationStatus(threadId, operationId), begin: async (threadId, operationId) => { await this.options.client.beginOperation(threadId, operationId); }, complete: async (threadId, operationId, result) => { await this.options.client.completeOperation(threadId, operationId, result); } }); }
+  private resumer(): ResumeController { return this.options.resumeController ?? new ResumeController(this.options.client, { resolve: async (threadId, interruptId, nonce, status, payload) => this.options.client.resolveInterrupt(threadId, interruptId, { nonce, status, payload }), status: (threadId, operationId) => this.options.client.operationStatus(threadId, operationId), begin: async (threadId, operationId) => { await this.options.client.beginOperation(threadId, operationId); }, complete: async (threadId, operationId, result) => { await this.options.client.completeOperation(threadId, operationId, result); }, fail: async (threadId, operationId, error) => { await (this.options.client as any).completeOperationError?.(threadId, operationId, error); } }); }
 }
 
 function promptText(input: unknown): string { if (typeof input === "string") return input; if (Array.isArray(input)) { const last = [...input].reverse().find((item) => item && typeof item === "object" && "role" in item && (item as any).role === "user"); if (last && typeof (last as any).content === "string") return (last as any).content; } if (input && typeof input === "object" && typeof (input as any).content === "string") return (input as any).content; return JSON.stringify(input); }

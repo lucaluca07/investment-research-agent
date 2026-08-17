@@ -132,6 +132,16 @@ class InterruptStore:
             "session": session if session else None,
         }
 
+    def open_interrupts(self, thread_id: str) -> list[dict[str, Any]]:
+        """Durable source of truth used after a Fastify restart."""
+        rows = self.database.connection.execute(
+            "SELECT cp.interrupt_id,cp.run_id,op.id FROM agent_checkpoints cp "
+            "JOIN tool_operations op ON op.approval_id=cp.interrupt_id AND op.thread_id=cp.thread_id "
+            "WHERE cp.thread_id=? AND op.status='waiting_approval' ORDER BY cp.created_at",
+            [thread_id],
+        ).fetchall()
+        return [{"interrupt_id": row[0], "run_id": row[1], "operation_id": row[2]} for row in rows]
+
     @staticmethod
     def _normalized(row, receipt, status, payload, interrupt_id):
         return {"interrupt_id": interrupt_id, "run_id": row[1], "operation_id": receipt[4], "checkpoint_id": receipt[5], "receipt_id": receipt[0], "status": status, "payload": payload}

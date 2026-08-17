@@ -32,6 +32,7 @@ export type ThreadState = { thread: AguiThread; last_event_seq: number; runs: Ag
 export type InterruptDecision = { interrupt_id: string; run_id: string; operation_id: string; checkpoint_id: string; receipt_id: string; status: string; payload: { approved: boolean } };
 export type ToolOperation = { id: string; status: "waiting_approval"|"approved"|"executing"|"succeeded"|"failed"|"rejected"|"cancelled"; result?: unknown };
 export type InterruptCheckpoint = { checkpoint_id: string; interrupt_id: string; run_id: string; operation_id: string; nonce: string; tool_call_id?: string; tool_name?: string; input?: unknown; last_event_seq: number; last_event: { type: string; data: Record<string, unknown> }; session: { session_id: string; revision: number; storage_ref: string } | null };
+export type OpenInterrupt = { interrupt_id: string; run_id: string; operation_id: string };
 
 export type ResearchClientOptions = {
   fetch?: typeof globalThis.fetch;
@@ -75,9 +76,11 @@ export class ResearchClient {
   async requestInterrupt(input: { thread_id: string; interrupt_id: string; run_id: string; nonce: string; tool_name?: string; input?: unknown; last_event_seq?: number }): Promise<Record<string, unknown>> { return this.post("v1/internal/interrupts", input) as Promise<Record<string, unknown>>; }
   async resolveInterrupt(thread_id: string, interrupt_id: string, input: { nonce: string; status: "resolved" | "cancelled"; payload: { approved: boolean }; payload_hash?: string }): Promise<InterruptDecision> { return parseInterrupt(await this.post(`v1/internal/interrupts/${encodeURIComponent(thread_id)}/${encodeURIComponent(interrupt_id)}/resolve`, input)); }
   async getInterruptCheckpoint(thread_id: string, interrupt_id: string): Promise<InterruptCheckpoint> { return parseInterruptCheckpoint(await this.request("GET", `v1/internal/interrupts/${encodeURIComponent(thread_id)}/${encodeURIComponent(interrupt_id)}/checkpoint`)); }
+  async listOpenInterrupts(thread_id: string): Promise<OpenInterrupt[]> { const value = await this.request("GET", `v1/internal/interrupts/${encodeURIComponent(thread_id)}`); if (!Array.isArray(value) || !value.every((v) => isObject(v) && typeof v.interrupt_id === "string" && typeof v.run_id === "string" && typeof v.operation_id === "string")) throw new ResearchClientError("invalid open interrupt response", 200, value); return value as OpenInterrupt[]; }
   async beginOperation(thread_id: string, operation_id: string): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/begin", { thread_id, operation_id }) as Promise<Record<string, unknown>>; }
   async operationStatus(thread_id: string, operation_id: string): Promise<ToolOperation> { return parseToolOperation(await this.post("v1/internal/operations/status", { thread_id, operation_id })); }
   async completeOperation(thread_id: string, operation_id: string, result: unknown): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/complete", { thread_id, operation_id, result }) as Promise<Record<string, unknown>>; }
+  async completeOperationError(thread_id: string, operation_id: string, error: unknown): Promise<Record<string, unknown>> { return this.post("v1/internal/operations/complete", { thread_id, operation_id, error }) as Promise<Record<string, unknown>>; }
 
   async queryCompanySnapshot(ticker: "300476.SZ"): Promise<CompanySnapshot> {
     return this.post("v1/tools/query-company-snapshot", { ticker }) as Promise<CompanySnapshot>;

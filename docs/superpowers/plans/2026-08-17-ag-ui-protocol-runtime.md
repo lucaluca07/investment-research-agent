@@ -344,6 +344,13 @@ git commit -m "feat: persist interrupt decisions and tool operations"
 
 ### Task 8: Implement Pi checkpoint and Resume control
 
+> **Approved implementation note (2026-08-17):** Pi's public API does not expose
+> revision restoration. Resume is therefore a durable, server-side
+> `recovery_fallback`: after an atomic approval receipt it creates a new run,
+> reconstructs checkpoint context, executes/replays the durable operation once,
+> and writes `TOOL_CALL_RESULT` with the original tool-call ID. It must work
+> after Fastify/Pi restart; it must not pretend to restore a Pi revision.
+
 **Files:**
 - Modify: `apps/chat-backend/src/pi/research-session.ts`
 - Modify: `apps/chat-backend/src/pi/research-session.test.ts`

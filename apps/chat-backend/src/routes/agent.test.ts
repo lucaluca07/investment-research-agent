@@ -48,12 +48,13 @@ describe("AG-UI agent routes", () => {
   it("resumes only from the server checkpoint, never browser supplied state", async () => {
     const { app, client, controller } = setup();
     client.getInterruptCheckpoint = vi.fn(async () => ({ checkpoint_id: "cp", interrupt_id: "interrupt", run_id: "run", operation_id: "op", nonce: "server-nonce" }));
-    controller.resumeActive = vi.fn(async (request: unknown) => ({ operation_id: "op", result: { ok: true }, fallback: false, events: [] }));
+    client.listOpenInterrupts = vi.fn(async () => [{ interrupt_id: "interrupt", run_id: "run", operation_id: "op" }]);
+    controller.resumeRecovery = vi.fn(async (request: unknown) => ({ operation_id: "op", result: { ok: true }, fallback: true }));
     await registerAgentRoutes(app, client, controller);
     const response = await app.inject({ method: "POST", url: "/v1/threads/t/interrupts/interrupt/resume", payload: { status: "resolved", payload: { approved: true }, checkpoint: { run_id: "forged" } } });
     expect(response.statusCode).toBe(200);
-    expect(controller.resumeActive).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t", checkpointReader: expect.any(Function), decision: expect.objectContaining({ interrupt_id: "interrupt", run_id: "run", operation_id: "op", checkpoint_id: "cp" }) }));
-    const request = controller.resumeActive.mock.calls[0][0];
+    expect(controller.resumeRecovery).toHaveBeenCalledWith(expect.objectContaining({ threadId: "t", checkpointReader: expect.any(Function), decision: expect.objectContaining({ interrupt_id: "interrupt", run_id: "run", operation_id: "op", checkpoint_id: "cp" }) }));
+    const request = controller.resumeRecovery.mock.calls[0][0];
     await expect(request.checkpointReader()).resolves.toEqual(expect.objectContaining({ run_id: "run", nonce: "server-nonce" }));
   });
 });
