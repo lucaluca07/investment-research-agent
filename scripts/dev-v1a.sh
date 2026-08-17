@@ -10,6 +10,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+if [[ -z "${LLM_API_KEY:-}" && -z "${KIMI_API_KEY:-}" ]]; then
+  echo "Set KIMI_API_KEY for the default Kimi endpoint, or LLM_API_KEY for an override." >&2
+  exit 1
+fi
+
 IRA_TEST_MODE=1 uvicorn research_service.app:create_app --factory --host 127.0.0.1 --port 8010 --app-dir "$ROOT_DIR/services/research" & PIDS+=("$!")
 IRA_RESEARCH_SERVICE_URL=http://127.0.0.1:8010 pnpm --dir "$ROOT_DIR" --filter @ira/chat-backend dev -- --host 127.0.0.1 --port 8020 & PIDS+=("$!")
 pnpm --dir "$ROOT_DIR" --filter @ira/web dev -- --host 127.0.0.1 --port 5173 & PIDS+=("$!")
