@@ -15,7 +15,7 @@ def database():
         instance.close()
 
 
-def test_agui_schema_includes_durable_tables_and_preserves_legacy_tables(database):
+def test_agui_schema_includes_durable_tables(database):
     tables = {
         row[0]
         for row in database.connection.execute(
@@ -34,7 +34,6 @@ def test_agui_schema_includes_durable_tables_and_preserves_legacy_tables(databas
         "agent_checkpoints",
         "resume_receipts",
     } <= tables
-    assert {"chats", "chat_messages", "chat_events"} <= tables
 
 
 def test_agui_events_are_unique_per_thread_sequence(database):

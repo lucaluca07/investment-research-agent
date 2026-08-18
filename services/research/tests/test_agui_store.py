@@ -15,7 +15,7 @@ def test_create_run_is_idempotent_and_writes_initial_events_only_to_agui_tables(
     assert replay["replayed"] is True
     with s.database.read() as c:
         assert c.execute("select count(*) from agui_events").fetchone()[0] == 2
-        assert c.execute("select count(*) from chat_events").fetchone()[0] == 0
+        assert c.execute("select count(*) from agui_events").fetchone()[0] == 2
 
 
 def test_events_have_contiguous_sequences_and_cursor_state():

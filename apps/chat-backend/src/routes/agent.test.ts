@@ -85,13 +85,7 @@ describe("AG-UI agent routes", () => {
     });
     expect(standard.statusCode).toBe(200);
     expect(standard.headers["content-type"]).toContain("text/event-stream");
-    const alias = await app.inject({
-      method: "POST",
-      url: "/v1/threads/t/runs/stream",
-      payload: { input: "x", idempotency_key: "k2" },
-    });
-    expect(alias.statusCode).toBe(200);
-    expect(controller.start).toHaveBeenCalledTimes(2);
+    expect(controller.start).toHaveBeenCalledTimes(1);
     controller.start.mockRejectedValueOnce(
       new Error("thread already has an active run"),
     );

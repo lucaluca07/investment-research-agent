@@ -70,7 +70,6 @@ export async function registerAgentRoutes(
     }
   };
   app.post("/v1/threads/:threadId/runs", streamRun);
-  app.post("/v1/threads/:threadId/runs/stream", streamRun);
   app.get("/v1/threads/:threadId/events", async (request) => {
     const q = request.query as { after?: string };
     const headerCursor = Number(request.headers["last-event-id"] ?? 0);
