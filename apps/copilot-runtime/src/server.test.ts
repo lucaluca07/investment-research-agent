@@ -1,10 +1,18 @@
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
-import { awaitDrain, registerResearchRuntime, streamAgentRun, writeFrame } from "./server.js";
+import { awaitDrain, registerResearchRuntime, streamAgentRun, takeSseEvents, writeFrame } from "./server.js";
 
 describe("runtime listener", () => {
+  const frame = (id: number, type: string, data: unknown) => [
+    `id: ${id}`,
+    `event: ${type}`,
+    `data: ${JSON.stringify(data)}`,
+    "",
+    "",
+  ].join("\n");
+
   it("serves health/info and streams interrupt outcome as SSE", async () => {
-    const app = Fastify(); const fetchMock = vi.fn().mockImplementation((url: string) => url.includes("/runs") ? Promise.resolve(new Response(JSON.stringify({ run_id: "r" }), { status: 200 })) : Promise.resolve(new Response(JSON.stringify([{ sequence: 1, type: "RUN_FINISHED", data: { type: "RUN_FINISHED", outcome: { type: "interrupt", interrupts: [{ id: "i" }] } } }]), { status: 200 })));
+    const app = Fastify(); const fetchMock = vi.fn().mockImplementation((url: string) => url.includes("/runs") ? Promise.resolve(new Response(JSON.stringify({ run_id: "r" }), { status: 200 })) : Promise.resolve(new Response(frame(1, "RUN_FINISHED", { type: "RUN_FINISHED", outcome: { type: "interrupt", interrupts: [{ id: "i" }] } }), { status: 200, headers: { "content-type": "text/event-stream" } })));
     vi.stubGlobal("fetch", fetchMock);
     app.get("/health", async () => ({ ok: true })); registerResearchRuntime(app, { researchUrl: "http://127.0.0.1:8010" }); await app.ready();
     expect((await app.inject({ method: "GET", url: "/health" })).statusCode).toBe(200); expect((await app.inject({ method: "GET", url: "/info" })).json().agents[0].name).toBe("research-agent");
@@ -30,8 +38,15 @@ describe("runtime listener", () => {
   it("unblocks backpressure wait on abort and close", async () => {
     const raw = { once: vi.fn(), off: vi.fn() }; const controller = new AbortController(); const pending = awaitDrain(raw, controller.signal); controller.abort(); await expect(pending).resolves.toBe(false); expect(raw.off).toHaveBeenCalled();
   });
-  it("emits RUN_ERROR on polling timeout", async () => {
-    process.env.IRA_RUNTIME_MAX_POLLS = "0"; const app = Fastify(); vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ run_id: "r" }), { status: 200 }))); registerResearchRuntime(app, { researchUrl: "http://127.0.0.1:8010" }); await app.ready(); const result = await app.inject({ method: "POST", url: "/agent/research-agent/run", payload: { threadId: "t" } }); delete process.env.IRA_RUNTIME_MAX_POLLS; expect(result.body).toContain("run polling timed out");
+  it("emits sequenced RUN_ERROR when the upstream SSE closes before a terminal event", async () => {
+    const app = Fastify(); vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => url.includes("/runs") ? Promise.resolve(new Response(JSON.stringify({ run_id: "r" }), { status: 200 })) : Promise.resolve(new Response(frame(4, "RUN_STARTED", { type: "RUN_STARTED" }), { status: 200, headers: { "content-type": "text/event-stream" } })))); registerResearchRuntime(app, { researchUrl: "http://127.0.0.1:8010" }); await app.ready(); const result = await app.inject({ method: "POST", url: "/agent/research-agent/run", payload: { threadId: "t" } }); expect(result.body).toContain("event stream closed before a terminal event"); expect(result.body).toContain("id: 5");
+  });
+
+  it("parses fragmented named SSE frames and preserves the cursor", () => {
+    const partial = takeSseEvents(["id: 7", "event: TEXT_MESSAGE_CONTENT", "data: {\"delta\":\"hel"].join("\n"));
+    expect(partial.events).toEqual([]);
+    const complete = takeSseEvents(`${partial.remainder}lo\"}\n\n${frame(8, "RUN_FINISHED", { type: "RUN_FINISHED" })}`);
+    expect(complete.events).toEqual([{ id: 7, type: "TEXT_MESSAGE_CONTENT", data: { delta: "hello" } }, { id: 8, type: "RUN_FINISHED", data: { type: "RUN_FINISHED" } }]);
   });
   it("route stream uses abort-aware backpressure primitive", async () => {
     const raw = { once: vi.fn(), off: vi.fn() }; const controller = new AbortController(); const pending = awaitDrain(raw, controller.signal); controller.abort(); await expect(pending).resolves.toBe(false); expect(raw.once).toHaveBeenCalled(); expect(raw.off).toHaveBeenCalled();

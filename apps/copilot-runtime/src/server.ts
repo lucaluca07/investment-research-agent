@@ -16,6 +16,31 @@ export async function writeFrame(raw: any, frame: string, signal: AbortSignal): 
   return await awaitDrain(raw, signal);
 }
 
+type SseEvent = { id?: number; type?: string; data?: unknown };
+
+/** Parse complete SSE records while retaining an incomplete trailing record. */
+export function takeSseEvents(buffer: string): { events: SseEvent[]; remainder: string } {
+  const records = buffer.split(/\r?\n\r?\n/);
+  const remainder = records.pop() ?? "";
+  const events = records.map((record) => {
+    const fields: Record<string, string[]> = {};
+    for (const line of record.split(/\r?\n/)) {
+      const match = /^(id|event|data): ?(.*)$/.exec(line);
+      if (match) (fields[match[1]] ??= []).push(match[2]);
+    }
+    const text = (fields.data ?? []).join("\n");
+    let data: unknown = text;
+    if (text) { try { data = JSON.parse(text); } catch { /* upstream payload is allowed to be text */ } }
+    const parsedId = Number((fields.id ?? [""])[0]);
+    return { id: Number.isSafeInteger(parsedId) && parsedId >= 0 ? parsedId : undefined, type: (fields.event ?? [undefined])[0], data };
+  });
+  return { events, remainder };
+}
+
+function runErrorFrame(sequence: number, message: string): string {
+  return `id: ${Math.max(1, sequence + 1)}\nevent: RUN_ERROR\ndata: ${JSON.stringify({ type: "RUN_ERROR", message })}\n\n`;
+}
+
 type RuntimeInput = Record<string, any> & { threadId?: string; thread_id?: string };
 type RuntimeDeps = {
   researchUrl: string;
@@ -47,26 +72,46 @@ export async function streamAgentRun({ researchUrl, input, headers, raw, signal,
     raw.end?.();
     return;
   }
-  const created = await createResponse.json() as { run_id?: string; runId?: string; last_event_seq?: number; lastEventSeq?: number };
-  let cursor = Number(input.after ?? created.last_event_seq ?? created.lastEventSeq ?? 0);
-  const maxPolls = Number(process.env.IRA_RUNTIME_MAX_POLLS ?? 120);
-  for (let attempt = 0; attempt < maxPolls && !signal.aborted; attempt++) {
-    const eventsResponse = await fetcher(`${researchUrl}/v1/threads/${encodeURIComponent(threadId)}/events?after=${cursor}`, { headers, signal });
-    if (!eventsResponse.ok) throw new Error(`event replay failed: ${eventsResponse.status}`);
-    const events = await eventsResponse.json() as Array<{ sequence?: number; type?: string; data?: unknown }>;
-    for (const item of events) {
-      const sequence = Number(item.sequence ?? ++cursor); if (sequence <= cursor && sequence !== 0) continue; cursor = sequence;
-      const event = (item.data ?? item) as { type?: string }; const type = item.type ?? event.type ?? "AGUI_EVENT";
-      const frame = `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify(event)}\n\n`;
+  // The create response may report the run's latest persisted sequence.  It is
+  // not a replay cursor: using it here would turn an idempotent retry into an
+  // empty stream.  Only the caller's explicit cursor advances the replay.
+  await createResponse.json();
+  let cursor = after;
+  const eventsResponse = await fetcher(`${researchUrl}/v1/threads/${encodeURIComponent(threadId)}/events?after=${cursor}`, {
+    headers: { ...headers, accept: "text/event-stream" }, signal,
+  });
+  if (!eventsResponse.ok) throw new Error(`event replay failed: ${eventsResponse.status}`);
+  if (!eventsResponse.body) throw new Error("event stream has no response body");
+  const reader = eventsResponse.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (!signal.aborted) {
+    const next = await reader.read();
+    if (next.done) break;
+    buffer += decoder.decode(next.value, { stream: true });
+    const parsed = takeSseEvents(buffer); buffer = parsed.remainder;
+    for (const event of parsed.events) {
+      const sequence = event.id ?? cursor + 1;
+      if (sequence <= cursor) continue;
+      cursor = sequence;
+      const type = event.type ?? "AGUI_EVENT";
+      const frame = `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify(event.data ?? {})}\n\n`;
       if (!(await writeFrame(raw, frame, signal))) return;
       if (type === "RUN_FINISHED" || type === "RUN_ERROR") { raw.end?.(); return; }
     }
-    if (!events.length) await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (!signal.aborted) {
-    const frame = `event: RUN_ERROR\ndata: ${JSON.stringify({ type: "RUN_ERROR", message: "run polling timed out" })}\n\n`;
-    if (await writeFrame(raw, frame, signal)) raw.end?.();
+  if (!signal.aborted && buffer.trim()) {
+    const parsed = takeSseEvents(`${buffer}\n\n`);
+    for (const event of parsed.events) {
+      const sequence = event.id ?? cursor + 1;
+      if (sequence <= cursor) continue;
+      cursor = sequence;
+      const type = event.type ?? "AGUI_EVENT";
+      if (!(await writeFrame(raw, `id: ${sequence}\nevent: ${type}\ndata: ${JSON.stringify(event.data ?? {})}\n\n`, signal))) return;
+      if (type === "RUN_FINISHED" || type === "RUN_ERROR") { raw.end?.(); return; }
+    }
   }
+  if (!signal.aborted && await writeFrame(raw, runErrorFrame(cursor, "event stream closed before a terminal event"), signal)) raw.end?.();
 }
 
 export function registerResearchRuntime(app: any, options: { researchUrl?: string } = {}): void {
@@ -90,7 +135,7 @@ export function registerResearchRuntime(app: any, options: { researchUrl?: strin
     } catch (error: any) {
       if (!abort.signal.aborted) {
         const message = error instanceof Error ? error.message : "run polling failed";
-        await writeFrame(reply.raw, `event: RUN_ERROR\ndata: ${JSON.stringify({ type: "RUN_ERROR", message })}\n\n`, abort.signal);
+        await writeFrame(reply.raw, runErrorFrame(Number(input.after ?? headers["last-event-id"] ?? 0), message), abort.signal);
       }
     } finally {
       request.raw.off?.("aborted", onRequestAbort);

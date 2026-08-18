@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 
-describe("AG-UI runtime process contract", () => {
+// Every case starts three child servers.  Keep them serial: reserving an
+// ephemeral port and spawning a server are not atomic across concurrent cases.
+describe.sequential("AG-UI runtime process contract", () => {
   it("discovers capabilities through a real Python research-service process", async () => {
     const researchPort = await freePort();
     const runtimePort = await freePort();
