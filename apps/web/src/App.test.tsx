@@ -50,7 +50,7 @@ describe("web chat", () => {
     const api = createChatApi(vi.fn() as never, factory);
     const received: any[] = []; const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
     const firstListener = sources[0]!.addEventListener as ReturnType<typeof vi.fn>;
-    const delta = firstListener.mock.calls.find(([name]) => name === "message.delta")![1];
+    const delta = firstListener.mock.calls.find(([name]) => name === "TEXT_MESSAGE_CONTENT")![1];
     delta({ lastEventId: "9", data: JSON.stringify({ run_id: "run-1", delta: "草稿" }) });
     sources[0]!.onerror?.();
     await new Promise((resolve) => setTimeout(resolve, 280));
