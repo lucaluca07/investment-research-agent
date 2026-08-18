@@ -4,34 +4,8 @@ import { once } from "node:events";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createApp } from "../../apps/chat-backend/src/app.js";
-import { FakeAgentSession } from "./fake-agent-session.js";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
-
-function fakeClient() {
-  const events = new Map<string, any[]>();
-  const runs = new Map<string, any>();
-  let seq = 0;
-  return {
-    async createAguiRun(thread_id: string, input: unknown, key: string) {
-      const old = [...runs.values()].find((r) => r.thread_id === thread_id && r.idempotency_key === key);
-      if (old) return { run: { ...old, replayed: true }, replayed: true, last_event_seq: seq };
-      const run = { id: `run-${++seq}`, thread_id, idempotency_key: key, status: "running", model: null };
-      runs.set(run.id, run);
-      events.set(thread_id, []);
-      return { run, replayed: false, last_event_seq: 0 };
-    },
-    async appendAguiEvents(thread_id: string, run_id: string, values: any[]) {
-      const list = events.get(thread_id) ?? [];
-      const created = values.map((v) => ({ thread_id, run_id, sequence: ++seq, type: v.type, data: v.data }));
-      list.push(...created); events.set(thread_id, list); return { events: created };
-    },
-    async listAguiEvents(thread_id: string, after = 0) { return (events.get(thread_id) ?? []).filter((e) => e.sequence > after); },
-    async transitionAguiRun(run_id: string, status: string) { const run = runs.get(run_id); run.status = status; return run; },
-    async getAguiState(thread_id: string) { return { thread: { id: thread_id, title: "", title_source: "", title_locked: false, created_at: "" }, last_event_seq: (events.get(thread_id) ?? []).at(-1)?.sequence ?? 0, runs: [...runs.values()].filter((r) => r.thread_id === thread_id) }; },
-  } as any;
-}
 
 describe("AG-UI runtime process contract", () => {
   it("discovers capabilities through a real Python research-service process", async () => {
@@ -172,59 +146,60 @@ describe("AG-UI runtime process contract", () => {
     } finally { await stack.stop(); }
   }, 45_000);
 
-  it("crosses a child-process runtime boundary and preserves persisted SSE ids", async () => {
-    const port = await freePort();
-    const tsx = path.resolve("node_modules/.bin/tsx");
-    const fixture = spawn(tsx, [path.join(path.dirname(fileURLToPath(import.meta.url)), "runtime-upstream-fixture.ts"), "0"], { stdio: ["ignore", "pipe", "inherit"] });
-    const [line] = await once(fixture.stdout!, "data") as [Buffer];
-    const upstreamPort = Number(line.toString().trim().split(":")[1]);
-    const runtime = spawn(tsx, [path.resolve("apps/copilot-runtime/src/server.ts")], { env: { ...process.env, PORT: String(port), IRA_RESEARCH_SERVICE_URL: `http://127.0.0.1:${upstreamPort}`, IRA_RUNTIME_MAX_POLLS: "10" }, stdio: ["ignore", "pipe", "inherit"] });
+  it("streams, reconnects, and deduplicates through Python, Fastify, and Runtime child processes", async () => {
+    const stack = await startDurableStack("streaming-boundary");
+    const thread = "task9-streaming-boundary";
     try {
-      await waitFor(`http://127.0.0.1:${port}/health`);
-      const response = await fetch(`http://127.0.0.1:${port}/agent/research-agent/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: "child-thread", input: "research" }) });
-      const text = await response.text();
-      const ids = [...text.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
-      expect(response.status).toBe(200);
-      expect(ids.length).toBe(3);
-      expect(ids).toEqual([...ids].sort((a, b) => a - b));
-      expect((text.match(/messageId/g) ?? []).length).toBe(1);
+      await json(`${stack.researchBase}/v1/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: thread }),
+      });
+      const request = {
+        threadId: thread,
+        input: "research Victory Giant",
+        idempotency_key: "stream-once",
+      };
+      const first = await fetch(`${stack.runtimeBase}/agent/research-agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const firstText = await first.text();
+      const firstIds = sseIds(firstText);
+      expect(first.status).toBe(200);
+      expect(firstIds.length).toBeGreaterThanOrEqual(3);
+      expect(firstIds).toEqual([...firstIds].sort((left, right) => left - right));
+
+      const reconnect = await fetch(`${stack.runtimeBase}/agent/research-agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "last-event-id": String(firstIds[0]) },
+        body: JSON.stringify(request),
+      });
+      const reconnectIds = sseIds(await reconnect.text());
+      expect(reconnect.status).toBe(200);
+      expect(reconnectIds.length).toBeGreaterThan(0);
+      expect(reconnectIds.every((id) => id > firstIds[0]!)).toBe(true);
+
+      const duplicate = await fetch(`${stack.runtimeBase}/agent/research-agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      const duplicateIds = sseIds(await duplicate.text());
+      expect(duplicate.status).toBe(200);
+      expect(duplicateIds).toEqual(firstIds);
+      const state = await json(`${stack.researchBase}/v1/threads/${thread}/state`) as { runs: unknown[] };
+      expect(state.runs).toHaveLength(1);
     } finally {
-      runtime.kill("SIGTERM"); fixture.kill("SIGTERM");
-      await Promise.allSettled([once(runtime, "exit"), once(fixture, "exit")]);
+      await stack.stop();
     }
-  }, 20_000);
-
-  it("streams persisted events, supports reconnect cursor and idempotent duplicate", async () => {
-    const client = fakeClient();
-    const app = await createApp({ researchClient: client, sessionFactory: async (id) => new FakeAgentSession(id) as any });
-    await app.ready();
-    const first = await app.inject({ method: "POST", url: "/v1/threads/thread-1/runs", payload: { input: "research", idempotency_key: "same" } });
-    expect(first.statusCode).toBe(200);
-    const duplicate = await app.inject({ method: "POST", url: "/v1/threads/thread-1/runs", payload: { input: "research", idempotency_key: "same" } });
-    expect(duplicate.statusCode).toBe(200);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const replay = await app.inject({ method: "GET", url: "/v1/threads/thread-1/events?after=0" });
-    const body = replay.json() as Array<{ sequence: number; type: string }>;
-    expect(body.length).toBeGreaterThan(0);
-    expect(body.map((e) => e.sequence)).toEqual([...body].sort((a, b) => a - b).map((e) => e.sequence));
-    await app.close();
-  });
-
-  it("replays only events after Last-Event-ID with monotonic ids", async () => {
-    const client = fakeClient();
-    const app = await createApp({ researchClient: client, sessionFactory: async (id) => new FakeAgentSession(id) as any });
-    await app.ready();
-    await app.inject({ method: "POST", url: "/v1/threads/thread-2/runs", payload: { input: "research", idempotency_key: "cursor" } });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const all = await app.inject({ method: "GET", url: "/v1/threads/thread-2/events?after=0" });
-    const events = all.json() as Array<{ sequence: number }>;
-    expect(events.length).toBeGreaterThan(0);
-    const cursor = events[0]!.sequence;
-    const resumed = await app.inject({ method: "GET", url: "/v1/threads/thread-2/events", headers: { "last-event-id": String(cursor) } });
-    expect((resumed.json() as Array<{ sequence: number }>).every((event) => event.sequence > cursor)).toBe(true);
-    await app.close();
-  });
+  }, 45_000);
 });
+
+function sseIds(text: string): number[] {
+  return [...text.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+}
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -325,10 +300,10 @@ async function startDurableStack(label: string) {
       cwd: path.resolve("services/research"), env: { ...process.env, PYTHONPATH: path.resolve("services/research") }, stdio: ["ignore", "pipe", "inherit"],
     });
     const chat = spawn(tsx, [path.resolve("apps/chat-backend/src/server.ts")], {
-      env: { ...process.env, PORT: String(chatPort), IRA_RESEARCH_SERVICE_URL: researchBase, IRA_RUNTIME_DIR: runtimeDir }, stdio: ["ignore", "pipe", "inherit"],
+      env: { ...process.env, NODE_ENV: "test", IRA_E2E_SESSION: "1", PORT: String(chatPort), IRA_RESEARCH_SERVICE_URL: researchBase, IRA_RUNTIME_DIR: runtimeDir }, stdio: ["ignore", "pipe", "inherit"],
     });
     const runtime = spawn(tsx, [path.resolve("apps/copilot-runtime/src/server.ts")], {
-      env: { ...process.env, PORT: String(runtimePort), IRA_RESEARCH_SERVICE_URL: researchBase }, stdio: ["ignore", "pipe", "inherit"],
+      env: { ...process.env, PORT: String(runtimePort), IRA_RESEARCH_SERVICE_URL: chatBase }, stdio: ["ignore", "pipe", "inherit"],
     });
     children = [python, chat, runtime];
     await Promise.all([waitFor(`${researchBase}/v1/threads`), waitForResponse(`${chatBase}/v1/threads/no-such/state`), waitFor(`${runtimeBase}/health`)]);

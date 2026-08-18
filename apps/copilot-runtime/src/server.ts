@@ -30,10 +30,23 @@ type RuntimeDeps = {
 export async function streamAgentRun({ researchUrl, input, headers, raw, signal, fetcher = fetch }: RuntimeDeps): Promise<void> {
   const threadId = input.threadId ?? input.thread_id;
   if (!threadId) throw new Error("threadId is required");
-  const createResponse = await fetcher(`${researchUrl}/v1/threads/${encodeURIComponent(threadId)}/runs`, {
+  const after = Number(input.after ?? headers["last-event-id"] ?? 0);
+  const runUrl = `${researchUrl}/v1/threads/${encodeURIComponent(threadId)}/runs${after > 0 ? `?after=${encodeURIComponent(String(after))}` : ""}`;
+  const createResponse = await fetcher(runUrl, {
     method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(input), signal,
   });
   if (!createResponse.ok) throw Object.assign(new Error(await createResponse.text()), { statusCode: createResponse.status });
+  if (createResponse.headers.get("content-type")?.includes("text/event-stream")) {
+    if (!createResponse.body) throw new Error("streaming run has no response body");
+    const reader = createResponse.body.getReader();
+    while (!signal.aborted) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!(await writeFrame(raw, new TextDecoder().decode(next.value, { stream: true }), signal))) return;
+    }
+    raw.end?.();
+    return;
+  }
   const created = await createResponse.json() as { run_id?: string; runId?: string; last_event_seq?: number; lastEventSeq?: number };
   let cursor = Number(input.after ?? created.last_event_seq ?? created.lastEventSeq ?? 0);
   const maxPolls = Number(process.env.IRA_RUNTIME_MAX_POLLS ?? 120);
@@ -63,7 +76,7 @@ export function registerResearchRuntime(app: any, options: { researchUrl?: strin
   app.post("/agent/research-agent/run", async (request: any, reply: any) => {
     const body = request.body ?? {}; const input = { ...body, threadId: body.threadId ?? body.thread_id };
     if (!input.threadId) return reply.code(422).send({ detail: "threadId is required" });
-    const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([key]) => key === "authorization" || key.startsWith("x-ira-")) as [string, string][]);
+    const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([key]) => key === "authorization" || key === "last-event-id" || key.startsWith("x-ira-")) as [string, string][]);
     reply.hijack(); reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     const abort = new AbortController();
     // `IncomingMessage#close` fires after a normal request body completes; only

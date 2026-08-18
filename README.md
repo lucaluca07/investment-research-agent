@@ -12,14 +12,14 @@ pnpm --filter @ira/web build
 pnpm test:e2e
 ```
 
-The optional `pnpm dev:v1a` script starts the Python service, Chat Backend,
+The optional `pnpm dev:agui` script starts the Python service, Chat Backend,
 and Web dev server on loopback addresses. It traps termination and cleans up
 all child processes.
 
 To validate credentials and profile selection without starting any service:
 
 ```bash
-bash scripts/dev-v1a.sh --validate-credentials
+bash scripts/dev-agui.sh --validate-credentials
 ```
 
 ## Model configuration
@@ -29,7 +29,7 @@ Set the Kimi key before startup:
 
 ```bash
 export KIMI_API_KEY='your-secret-key'
-pnpm dev:v1a
+pnpm dev:agui
 ```
 
 For another OpenAI-compatible endpoint, use the override configuration:
@@ -42,7 +42,7 @@ export LLM_CONTEXT_LENGTH='131072'
 export LLM_REASONING_EFFORT='medium'
 export LLM_SUPPORTS_VISION='false'
 export LLM_COMPAT_PROFILE='openai'
-pnpm dev:v1a
+pnpm dev:agui
 ```
 
 Never commit secrets or put them in `.env`, `models.json`, logs, or browser

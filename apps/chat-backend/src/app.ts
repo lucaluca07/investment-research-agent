@@ -3,6 +3,7 @@ import { ResearchClient } from "./research-client.js";
 import { registerAgentRoutes } from "./routes/agent.js";
 import { RunController } from "./ag-ui/run-controller.js";
 import { createResearchSession } from "./pi/research-session.js";
+import { E2eSession } from "./pi/e2e-session.js";
 
 export type AppOptions = {
   researchClient?: ResearchClient;
@@ -16,6 +17,8 @@ export async function createApp(options: AppOptions = {}): Promise<FastifyInstan
     client,
     sessionFactory: options.sessionFactory
       ? async (threadId) => options.sessionFactory!(threadId)
+      : process.env.NODE_ENV === "test" && process.env.IRA_E2E_SESSION === "1"
+        ? async () => new E2eSession()
       : async (threadId) => createResearchSession({ sessionId: threadId, client }) as Promise<any>,
     // Resume is server-to-server only.  This deliberately exposes the same
     // narrow allowlist as Pi's research tools, never a browser supplied URL/function.
