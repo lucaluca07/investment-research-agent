@@ -27,7 +27,7 @@ export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: 
       let stopped = false;
       const connect = () => {
         if (stopped) return;
-        source = sourceFactory(`/v1/threads/${encodeURIComponent(chatId)}/runs/stream${lastId ? `?after=${lastId}` : ""}`);
+        source = sourceFactory(`/v1/threads/${encodeURIComponent(chatId)}/events${lastId ? `?after=${lastId}` : ""}`);
         source.onopen = () => onConnection(true);
         source.onerror = () => { onConnection(false); source?.close(); setTimeout(connect, 250); };
         source.onmessage = (message) => { const eventMessage = message as MessageEvent; const event = { id: Number(eventMessage.lastEventId), type: eventMessage.type || "message", data: JSON.parse(eventMessage.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } };

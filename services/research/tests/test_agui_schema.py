@@ -114,7 +114,7 @@ def test_agui_idempotency_constraints(database):
 def test_existing_incompatible_database_requires_explicit_development_reset(tmp_path):
     path = tmp_path / "research.duckdb"
     legacy_connection = duckdb.connect(str(path))
-    legacy_connection.execute("CREATE TABLE chats (id VARCHAR PRIMARY KEY)")
+    legacy_connection.execute("CREATE TABLE legacy_threads (id VARCHAR PRIMARY KEY)")
     legacy_connection.close()
 
     with pytest.raises(RuntimeError, match="pnpm db:reset:dev"):

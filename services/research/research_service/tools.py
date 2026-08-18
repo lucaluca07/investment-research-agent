@@ -3,7 +3,6 @@ import json
 from importlib.resources import files
 from typing import Any
 
-from .runs import RunStore
 
 
 def company_snapshot(ticker: str) -> dict[str, Any]:
@@ -22,26 +21,3 @@ def input_hash(title: str, body: str, citation_ids: list[str]) -> str:
     )
     return hashlib.sha256(payload.encode()).hexdigest()
 
-
-def seed_fixture_citations(run_store: RunStore) -> None:
-    snapshot = company_snapshot("300476.SZ")
-    with run_store.database.transaction() as connection:
-        for citation in snapshot["citations"]:
-            connection.execute(
-                "INSERT INTO citations (id, document_id, title, published_at, locator) "
-                "VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                [
-                    citation["document_id"], citation["document_id"], citation["title"],
-                    citation["published_at"], citation["locator"],
-                ],
-            )
-
-
-def citation_ids_exist(run_store: RunStore, citation_ids: list[str]) -> bool:
-    if not citation_ids:
-        return False
-    with run_store.database.read() as connection:
-        count = connection.execute(
-            "SELECT COUNT(*) FROM citations WHERE id IN (SELECT UNNEST(?))", [citation_ids]
-        ).fetchone()[0]
-    return count == len(set(citation_ids))

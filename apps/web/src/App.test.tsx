@@ -16,10 +16,10 @@ describe("web chat", () => {
     let onEvent: ((event: any) => void) | undefined; let onConnection: ((connected: boolean) => void) | undefined;
     const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "history", pi_session_id: "pi" }]); api.subscribe = vi.fn((_id, event, connection) => { onEvent = event; onConnection = connection; return () => {}; }); api.stop = vi.fn().mockRejectedValue(new Error("stop"));
     render(<App api={api} />); expect(await screen.findByRole("button", { name: "history" })).toBeTruthy(); await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
-    onEvent?.({ id: 1, type: "run.status", data: { run_id: "run-1", status: "running" } });
-    onEvent?.({ id: 2, type: "tool.completed", data: { tool_name: "query_company_snapshot" } });
-    onEvent?.({ id: 3, type: "message.delta", data: { run_id: "run-1", delta: "胜宏" } });
-    onEvent?.({ id: 4, type: "message.delta", data: { run_id: "run-1", delta: "科技" } });
+    onEvent?.({ id: 1, type: "RUN_STARTED", data: { run_id: "run-1" } });
+    onEvent?.({ id: 2, type: "TOOL_CALL_RESULT", data: { tool_name: "query_company_snapshot" } });
+    onEvent?.({ id: 3, type: "TEXT_MESSAGE_CONTENT", data: { messageId: "message-1", delta: "胜宏" } });
+    onEvent?.({ id: 4, type: "TEXT_MESSAGE_CONTENT", data: { messageId: "message-1", delta: "科技" } });
     onEvent?.({ id: 5, type: "citation", data: { document_id: "doc-1", published_at: "2026-08-14", locator: "unsafe" } });
     onConnection?.(false); onConnection?.(true);
     expect(await screen.findByText("胜宏科技")).toBeTruthy(); expect(screen.getByRole("link", { name: /2026-08-14/ }).getAttribute("href")).toBe("#citation-doc-1");
@@ -35,12 +35,12 @@ describe("web chat", () => {
     const api = createChatApi(vi.fn() as never, factory);
     const received: any[] = [];
     const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
-    expect(factory).toHaveBeenCalledWith("/v1/chats/chat-1/events");
-    expect(listeners["message.delta"]).toBeTypeOf("function");
-    listeners["message.delta"](new MessageEvent("message.delta", { data: JSON.stringify({ run_id: "run-1", delta: "A" }), lastEventId: "7" }));
+    expect(factory).toHaveBeenCalledWith("/v1/threads/chat-1/events");
+    expect(listeners["TEXT_MESSAGE_CONTENT"]).toBeTypeOf("function");
+    listeners["TEXT_MESSAGE_CONTENT"](new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "A" }), lastEventId: "7" }));
     listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
     listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
-    expect(received.map((event) => event.type)).toEqual(["message.delta", "message.completed"]);
+    expect(received.map((event) => event.type)).toEqual(["TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"]);
     dispose(); expect(source.close).toHaveBeenCalled();
   });
 
