@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createApp } from "../../apps/chat-backend/src/app.js";
 import { FakeAgentSession } from "./fake-agent-session.js";
 
@@ -27,6 +32,28 @@ function fakeClient() {
 }
 
 describe("AG-UI runtime process contract", () => {
+  it("crosses a child-process runtime boundary and preserves persisted SSE ids", async () => {
+    const port = await freePort();
+    const tsx = path.resolve("node_modules/.bin/tsx");
+    const fixture = spawn(tsx, [path.join(path.dirname(fileURLToPath(import.meta.url)), "runtime-upstream-fixture.ts"), "0"], { stdio: ["ignore", "pipe", "inherit"] });
+    const [line] = await once(fixture.stdout!, "data") as [Buffer];
+    const upstreamPort = Number(line.toString().trim().split(":")[1]);
+    const runtime = spawn(tsx, [path.resolve("apps/copilot-runtime/src/server.ts")], { env: { ...process.env, PORT: String(port), IRA_RESEARCH_SERVICE_URL: `http://127.0.0.1:${upstreamPort}`, IRA_RUNTIME_MAX_POLLS: "10" }, stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      await waitFor(`http://127.0.0.1:${port}/health`);
+      const response = await fetch(`http://127.0.0.1:${port}/agent/research-agent/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: "child-thread", input: "research" }) });
+      const text = await response.text();
+      const ids = [...text.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+      expect(response.status).toBe(200);
+      expect(ids.length).toBe(3);
+      expect(ids).toEqual([...ids].sort((a, b) => a - b));
+      expect((text.match(/messageId/g) ?? []).length).toBe(1);
+    } finally {
+      runtime.kill("SIGTERM"); fixture.kill("SIGTERM");
+      await Promise.allSettled([once(runtime, "exit"), once(fixture, "exit")]);
+    }
+  }, 20_000);
+
   it("streams persisted events, supports reconnect cursor and idempotent duplicate", async () => {
     const client = fakeClient();
     const app = await createApp({ researchClient: client, sessionFactory: async (id) => new FakeAgentSession(id) as any });
@@ -58,3 +85,19 @@ describe("AG-UI runtime process contract", () => {
     await app.close();
   });
 });
+
+async function freePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const port = (server.address() as net.AddressInfo).port;
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
+
+async function waitFor(url: string): Promise<void> {
+  for (let index = 0; index < 100; index += 1) {
+    try { if ((await fetch(url)).ok) return; } catch { /* process is still starting */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${url}`);
+}

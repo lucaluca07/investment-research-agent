@@ -65,14 +65,25 @@ export function registerResearchRuntime(app: any, options: { researchUrl?: strin
     if (!input.threadId) return reply.code(422).send({ detail: "threadId is required" });
     const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([key]) => key === "authorization" || key.startsWith("x-ira-")) as [string, string][]);
     reply.hijack(); reply.raw.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-    const abort = new AbortController(); const onRequestClose = () => abort.abort(); request.raw.on("close", onRequestClose);
+    const abort = new AbortController();
+    // `IncomingMessage#close` fires after a normal request body completes; only
+    // abort on an actual client-side abort, or when the response stream closes
+    // before it has ended.
+    const onRequestAbort = () => abort.abort();
+    const onResponseClose = () => { if (!reply.raw.writableEnded) abort.abort(); };
+    request.raw.on("aborted", onRequestAbort);
+    reply.raw.on("close", onResponseClose);
     try { await streamAgentRun({ researchUrl, input, headers, raw: reply.raw, signal: abort.signal });
     } catch (error: any) {
       if (!abort.signal.aborted) {
         const message = error instanceof Error ? error.message : "run polling failed";
         await writeFrame(reply.raw, `event: RUN_ERROR\ndata: ${JSON.stringify({ type: "RUN_ERROR", message })}\n\n`, abort.signal);
       }
-    } finally { request.raw.off?.("close", onRequestClose); if (!reply.raw.writableEnded) reply.raw.end(); }
+    } finally {
+      request.raw.off?.("aborted", onRequestAbort);
+      reply.raw.off?.("close", onResponseClose);
+      if (!reply.raw.writableEnded) reply.raw.end();
+    }
   });
 }
 
