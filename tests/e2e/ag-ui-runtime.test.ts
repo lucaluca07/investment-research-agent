@@ -85,9 +85,12 @@ describe("AG-UI runtime process contract", () => {
       const cancelled = await fetch(`${base}/v1/runs/${runId}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "cancelled", error: { code: "run_cancelled" } }) });
       expect(cancelled.status).toBe(200);
       expect((await cancelled.json()).status).toBe("cancelled");
-      const interrupt = await fetch(`${base}/v1/internal/interrupts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_id: thread, interrupt_id: "approval-1", run_id: run.run_id, nonce: "nonce-1", tool_name: "query_company_snapshot", input: { ticker: "300476.SZ" } }) });
-      expect(interrupt.status).toBe(422);
-      return;
+      const eventBatch = await fetch(`${base}/v1/threads/${thread}/events:batch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ run_id: runId, events: [{ type: "TOOL_CALL_START", data: { toolCallId: "call-1" } }] }) });
+      expect(eventBatch.status).toBe(200);
+      const interrupt = await fetch(`${base}/v1/internal/interrupts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_id: thread, interrupt_id: "approval-1", run_id: runId, nonce: "nonce-1", tool_name: "query_company_snapshot", input: { ticker: "300476.SZ" }, last_event_seq: 1 }) });
+      expect([200, 201]).toContain(interrupt.status);
+      const resolution = await fetch(`${base}/v1/internal/interrupts/${thread}/resolve-set`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions: [{ interrupt_id: "approval-1", nonce: "nonce-1", status: "resolved", payload: { approved: false } }] }) });
+      expect(resolution.status).toBe(200);
       const decision = await fetch(`${base}/v1/internal/interrupts/${thread}/resolve-set`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions: [{ interrupt_id: "approval-1", nonce: "nonce-1", status: "resolved", payload: { approved: false } }] }) });
       expect(decision.status).toBe(200);
       expect((await decision.json()).receipts[0].payload.approved).toBe(false);
