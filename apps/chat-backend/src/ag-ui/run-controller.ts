@@ -49,6 +49,25 @@ export class RunController {
     return () => run.listeners.delete(listener);
   }
 
+  /**
+   * Attaches a live-event listener and exposes the exact active-run lifetime
+   * observed at subscription time.  SSE callers use this rather than polling
+   * getActive(), so a terminal run reliably closes the socket and lets
+   * EventSource reconnect for the next run on the same thread.
+   */
+  subscribeWithCompletion(
+    threadId: string,
+    listener: (event: unknown) => void,
+  ): { unsubscribe: () => void; done: Promise<void> } {
+    const active = this.active.get(threadId);
+    if (!active) return { unsubscribe: () => undefined, done: Promise.resolve() };
+    active.listeners.add(listener);
+    return {
+      unsubscribe: () => active.listeners.delete(listener),
+      done: active.done,
+    };
+  }
+
   getActive(threadId: string): AguiRun | undefined {
     return this.active.get(threadId)?.run;
   }

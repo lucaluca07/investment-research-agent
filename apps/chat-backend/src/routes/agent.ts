@@ -62,19 +62,39 @@ export async function registerAgentRoutes(
     };
     let replaying = true;
     const pending: unknown[] = [];
-    const unsubscribe = controller.subscribe(threadId, (event) => {
+    const subscription = controller.subscribeWithCompletion(threadId, (event) => {
       if (replaying) pending.push(event);
       else write(event);
     });
+    let replayComplete = false;
+    let runComplete = false;
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      subscription.unsubscribe();
+      request.raw.off("close", close);
+      if (!reply.raw.writableEnded && !reply.raw.destroyed) reply.raw.end();
+    };
+    const closeWhenReady = () => {
+      if (replayComplete && runComplete) close();
+    };
+    void subscription.done.then(
+      () => {
+        runComplete = true;
+        closeWhenReady();
+      },
+      () => {
+        runComplete = true;
+        closeWhenReady();
+      },
+    );
     for (const event of await client.listAguiEvents(threadId, after)) write(event);
     replaying = false;
     for (const event of pending) write(event);
-    if (!controller.getActive(threadId)) {
-      unsubscribe();
-      reply.raw.end();
-      return;
-    }
-    request.raw.once("close", unsubscribe);
+    replayComplete = true;
+    closeWhenReady();
+    if (!closed) request.raw.once("close", close);
   });
   app.get("/v1/threads/:threadId/state", async (request) =>
     client.getAguiState((request.params as { threadId: string }).threadId),

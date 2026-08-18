@@ -27,9 +27,16 @@ function setup() {
       done: Promise.resolve(),
     })),
     subscribe: vi.fn(() => () => undefined),
+    subscribeWithCompletion: vi.fn(),
     getActive: vi.fn(() => undefined),
     stop: vi.fn(async () => ({ id: "r", status: "cancelled" })),
   } as any;
+  controller.subscribeWithCompletion.mockImplementation(
+    (threadId: string, listener: (event: unknown) => void) => ({
+      unsubscribe: controller.subscribe(threadId, listener),
+      done: Promise.resolve(),
+    }),
+  );
   return { app, client, controller };
 }
 
@@ -142,6 +149,58 @@ describe("AG-UI agent routes", () => {
       url: "/v1/threads/t/events",
     });
     expect(response.body.match(/TEXT_MESSAGE_CONTENT/g)?.length).toBe(1);
+  });
+
+  it("ends each active SSE subscription after its run so a later run on the thread can stream", async () => {
+    const { app, client, controller } = setup();
+    let current: {
+      listener?: (event: unknown) => void;
+      resolve?: () => void;
+      done: Promise<void>;
+    } | undefined;
+    const begin = () => {
+      let resolve!: () => void;
+      current = {
+        done: new Promise<void>((done) => {
+          resolve = done;
+        }),
+        resolve,
+      };
+    };
+    controller.getActive.mockImplementation(() =>
+      current ? { id: "active", status: "running" } : undefined,
+    );
+    controller.subscribeWithCompletion = vi.fn(
+      (_thread: string, listener: (event: unknown) => void) => {
+        current!.listener = listener;
+        return {
+          unsubscribe: () => {
+            if (current) current.listener = undefined;
+          },
+          done: current!.done,
+        };
+      },
+    );
+    client.listAguiEvents.mockResolvedValue([]);
+    await registerAgentRoutes(app, client, controller);
+
+    begin();
+    const first = app.inject({ method: "GET", url: "/v1/threads/t/events" });
+    await vi.waitFor(() => expect(current?.listener).toBeTypeOf("function"));
+    current!.listener!({ sequence: 1, type: "RUN_STARTED", data: {} });
+    current!.resolve!();
+    current = undefined;
+    expect((await first).body).toContain("RUN_STARTED");
+
+    begin();
+    const second = app.inject({ method: "GET", url: "/v1/threads/t/events?after=1" });
+    await vi.waitFor(() => expect(current?.listener).toBeTypeOf("function"));
+    current!.listener!({ sequence: 2, type: "RUN_STARTED", data: {} });
+    current!.resolve!();
+    current = undefined;
+    const response = await second;
+    expect(response.body).toContain("id: 2");
+    expect(controller.subscribeWithCompletion).toHaveBeenCalledTimes(2);
   });
 
   it("resumes only from the server checkpoint, never browser supplied state", async () => {
