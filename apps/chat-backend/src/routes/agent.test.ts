@@ -41,6 +41,28 @@ function setup() {
 }
 
 describe("AG-UI agent routes", () => {
+  it("proxies thread discovery and creation through the durable research service", async () => {
+    const { app, client, controller } = setup();
+    client.listThreads = vi.fn(async () => [{ id: "t", title: "PCB", title_source: "user", title_locked: false, created_at: "now" }]);
+    client.createThread = vi.fn(async (title: string, id?: string) => ({ id: id ?? "new", title, title_source: "user", title_locked: false, created_at: "now" }));
+    await registerAgentRoutes(app, client, controller);
+
+    expect((await app.inject({ method: "GET", url: "/v1/threads" })).json()).toEqual([expect.objectContaining({ id: "t" })]);
+    const created = await app.inject({ method: "POST", url: "/v1/threads", payload: { id: "chosen", title: "AI PCB" } });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({ id: "chosen", title: "AI PCB" });
+    expect(client.createThread).toHaveBeenCalledWith("AI PCB", "chosen");
+  });
+
+  it("proxies persisted run cancellation for the runtime agent", async () => {
+    const { app, client, controller } = setup();
+    client.transitionAguiRun = vi.fn(async () => ({ id: "run", status: "cancelled" }));
+    await registerAgentRoutes(app, client, controller);
+
+    const response = await app.inject({ method: "POST", url: "/v1/runs/run/transition", payload: { status: "cancelled" } });
+    expect(response.statusCode).toBe(200);
+    expect(client.transitionAguiRun).toHaveBeenCalledWith("run", "cancelled", undefined);
+  });
   it("validates idempotency and exposes replay/state", async () => {
     const { app, client, controller } = setup();
     await registerAgentRoutes(app, client, controller);

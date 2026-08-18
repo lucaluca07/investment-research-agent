@@ -16,6 +16,16 @@ describe("PersistentResearchAgent", () => {
     await firstValueFrom(agent.run({ threadId: "t", runId: "r", messages } as any));
     expect(messages).toEqual([{ id: "m", role: "user", content: "hi" }]); expect(fetcher.mock.calls[0][1].headers).toMatchObject({ authorization: "a" });
   });
+  it("derives Fastify's required idempotency key and restores the AG-UI event name from SSE", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(c) {
+      c.enqueue(new TextEncoder().encode(`event: TEXT_MESSAGE_CONTENT\ndata: {"messageId":"message-1","delta":"PCB"}\n\n`));
+      c.close();
+    } }), { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const agent = new PersistentResearchAgent({ baseUrl: "http://127.0.0.1:8020", fetch: fetcher });
+    const event = await firstValueFrom(agent.run({ threadId: "t", runId: "run-1", messages: [] } as any));
+    expect(event).toMatchObject({ type: "TEXT_MESSAGE_CONTENT", messageId: "message-1", delta: "PCB" });
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toMatchObject({ idempotency_key: "run-1" });
+  });
   it("replays events after cursor", async () => {
     const fetcher = vi.fn().mockImplementation((url: string) => url.includes("/state") ? response({ state: { x: 1 } }) : response([{ sequence: 1, data: { type: "RUN_STARTED", runId: "r" } }, { sequence: 2, data: { type: "RUN_FINISHED", runId: "r", outcome: { type: "interrupt", interrupts: [] } } }]));
     const agent = new PersistentResearchAgent({ baseUrl: "http://127.0.0.1:8020", fetch: fetcher, threadId: "t" });

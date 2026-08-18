@@ -17,12 +17,14 @@ describe("web chat", () => {
     const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "history", pi_session_id: "pi" }]); api.subscribe = vi.fn((_id, event, connection) => { onEvent = event; onConnection = connection; return () => {}; }); api.stop = vi.fn().mockRejectedValue(new Error("stop"));
     render(<App api={api} />); expect(await screen.findByRole("button", { name: "history" })).toBeTruthy(); await waitFor(() => expect(api.subscribe).toHaveBeenCalled());
     onEvent?.({ id: 1, type: "RUN_STARTED", data: { run_id: "run-1" } });
-    onEvent?.({ id: 2, type: "TOOL_CALL_RESULT", data: { tool_name: "query_company_snapshot" } });
+    onEvent?.({ id: 11, type: "TOOL_CALL_START", data: { toolCallId: "tool-1", toolCallName: "camel-start" } });
+    onEvent?.({ id: 2, type: "TOOL_CALL_RESULT", data: { toolCallId: "tool-1", toolCallName: "camel-result" } });
     onEvent?.({ id: 3, type: "TEXT_MESSAGE_CONTENT", data: { messageId: "message-1", delta: "胜宏" } });
     onEvent?.({ id: 4, type: "TEXT_MESSAGE_CONTENT", data: { messageId: "message-1", delta: "科技" } });
     onEvent?.({ id: 5, type: "citation", data: { document_id: "doc-1", published_at: "2026-08-14", locator: "unsafe" } });
     onConnection?.(false); onConnection?.(true);
     expect(await screen.findByText("胜宏科技")).toBeTruthy();
+    expect(screen.getByText("camel-result")).toBeTruthy();
     expect(api.getMessages).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "停止" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("停止失败"));

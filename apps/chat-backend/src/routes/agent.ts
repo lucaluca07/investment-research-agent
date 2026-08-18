@@ -8,6 +8,27 @@ export async function registerAgentRoutes(
   client: ResearchClient,
   controller: RunController,
 ): Promise<void> {
+  app.get("/v1/threads", async () => client.listThreads());
+  app.post("/v1/threads", async (request, reply) => {
+    const body = (request.body ?? {}) as { title?: unknown; id?: unknown };
+    if (body.title !== undefined && typeof body.title !== "string")
+      return reply.code(422).send({ detail: "title must be a string" });
+    if (body.id !== undefined && typeof body.id !== "string")
+      return reply.code(422).send({ detail: "id must be a string" });
+    const thread = await client.createThread(body.title ?? "", body.id);
+    return reply.code(201).send(thread);
+  });
+  app.post("/v1/runs/:runId/transition", async (request, reply) => {
+    const body = (request.body ?? {}) as { status?: unknown; error?: unknown };
+    const statuses = ["pending", "running", "completed", "interrupted", "failed", "cancelled"] as const;
+    if (typeof body.status !== "string" || !statuses.includes(body.status as typeof statuses[number]))
+      return reply.code(422).send({ detail: "status is required" });
+    return client.transitionAguiRun(
+      (request.params as { runId: string }).runId,
+      body.status as typeof statuses[number],
+      body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : undefined,
+    );
+  });
   const startRun = async (request: any, reply: any) => {
     const threadId = (request.params as { threadId: string }).threadId;
     const body = (request.body ?? {}) as {

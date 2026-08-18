@@ -31,4 +31,10 @@ describe("dev-agui startup script", () => {
     expect(script).toContain("dev --host 127.0.0.1 --port 5173");
     expect(script).not.toContain("dev -- --host 127.0.0.1 --port 5173");
   });
+
+  it("waits for both public Fastify services and sends the runtime through chat backend", async () => {
+    const script = await readFile(scriptPath, "utf8");
+    expect(script).toContain("IRA_RESEARCH_SERVICE_URL=http://127.0.0.1:8020 PORT=8030");
+    expect(script).toContain('"http://127.0.0.1:8030/health"');
+  });
 });

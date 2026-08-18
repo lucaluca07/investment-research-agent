@@ -19,6 +19,14 @@ describe("runtime listener", () => {
     const result = await app.inject({ method: "POST", url: "/agent/research-agent/run", payload: { threadId: "t", messages: [] }, headers: { authorization: "ok", cookie: "blocked" } });
     expect(result.headers["content-type"]).toContain("text/event-stream"); expect(result.body).toContain("event: RUN_FINISHED"); expect(result.body).toContain('"type":"interrupt"'); expect(fetchMock.mock.calls[0][1].headers.cookie).toBeUndefined();
   });
+  it("forwards a Fastify-compatible idempotency key when proxying an AG-UI run", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => url.includes("/runs")
+      ? Promise.resolve(new Response(JSON.stringify({ run: { id: "r" } }), { status: 202 }))
+      : Promise.resolve(new Response(frame(1, "RUN_FINISHED", { type: "RUN_FINISHED" }), { status: 200, headers: { "content-type": "text/event-stream" } })));
+    const raw = { write: vi.fn(() => true), end: vi.fn() };
+    await streamAgentRun({ researchUrl: "http://127.0.0.1:8020", input: { threadId: "t", runId: "agui-run" }, headers: {}, raw, signal: new AbortController().signal, fetcher: fetchMock });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ idempotency_key: "agui-run" });
+  });
   it("emits RUN_ERROR when event upstream fails", async () => {
     const app = Fastify(); vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => url.includes("/runs") ? Promise.resolve(new Response(JSON.stringify({ run_id: "r" }), { status: 200 })) : Promise.resolve(new Response("bad", { status: 503 }))));
     registerResearchRuntime(app, { researchUrl: "http://127.0.0.1:8010" }); await app.ready(); const result = await app.inject({ method: "POST", url: "/agent/research-agent/run", payload: { threadId: "t", messages: [] } }); expect(result.body).toContain("RUN_ERROR");

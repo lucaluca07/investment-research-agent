@@ -58,7 +58,7 @@ export async function streamAgentRun({ researchUrl, input, headers, raw, signal,
   const after = Number(input.after ?? headers["last-event-id"] ?? 0);
   const runUrl = `${researchUrl}/v1/threads/${encodeURIComponent(threadId)}/runs${after > 0 ? `?after=${encodeURIComponent(String(after))}` : ""}`;
   const createResponse = await fetcher(runUrl, {
-    method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(input), signal,
+    method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ ...input, idempotency_key: input.idempotency_key ?? input.runId ?? crypto.randomUUID() }), signal,
   });
   if (!createResponse.ok) throw Object.assign(new Error(await createResponse.text()), { statusCode: createResponse.status });
   if (createResponse.headers.get("content-type")?.includes("text/event-stream")) {

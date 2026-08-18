@@ -50,7 +50,26 @@ export class PersistentResearchAgent extends AbstractAgent {
   abortRun(): void { this.activeAbort?.abort(); if (this.activeRunId) void this.request(`/v1/runs/${encodeURIComponent(this.activeRunId)}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "cancelled" }) }).catch(() => undefined); }
 
   private stream(path: string, input: RunAgentInput, method: string): Observable<BaseEvent> {
-    return new Observable((subscriber) => { const abort = new AbortController(); this.activeAbort = abort; void (async () => { try { const response = await this.doFetch(this.baseUrl + path, { method, signal: abort.signal, headers: { "content-type": "application/json", ...this.extraHeaders }, body: JSON.stringify({ ...input, messages: structuredClone(input.messages) }) }); if (!response.ok || !response.body) throw new Error(`research run failed: ${response.status}`); const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; while (true) { const next = await reader.read(); if (next.done) break; buffer += decoder.decode(next.value, { stream: true }); const chunks = buffer.split("\n\n"); buffer = chunks.pop() ?? ""; for (const chunk of chunks) { const line = chunk.split("\n").find((value) => value.startsWith("data:")); if (!line) continue; const event = JSON.parse(line.slice(5).trim()) as BaseEvent & { sequence?: number; data?: BaseEvent }; const sequence = event.sequence; if (typeof sequence === "number" && sequence <= this.cursor) continue; if (typeof sequence === "number") this.cursor = sequence; subscriber.next((event.data ?? event) as BaseEvent); } } subscriber.complete(); } catch (error) { if (!abort.signal.aborted) subscriber.error(error); } })(); return () => abort.abort(); });
+    return new Observable((subscriber) => { const abort = new AbortController(); this.activeAbort = abort; void (async () => { try {
+      const response = await this.doFetch(this.baseUrl + path, { method, signal: abort.signal, headers: { "content-type": "application/json", ...this.extraHeaders }, body: JSON.stringify({ ...input, idempotency_key: (input as any).idempotency_key ?? input.runId ?? crypto.randomUUID(), messages: structuredClone(input.messages) }) });
+      if (!response.ok || !response.body) throw new Error(`research run failed: ${response.status}`);
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+      const deliver = (chunk: string) => {
+        const lines = chunk.split(/\r?\n/);
+        const data = lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
+        if (!data) return;
+        const eventName = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+        const parsed = JSON.parse(data) as BaseEvent & { sequence?: number; data?: BaseEvent };
+        const sequence = parsed.sequence;
+        if (typeof sequence === "number" && sequence <= this.cursor) return;
+        if (typeof sequence === "number") this.cursor = sequence;
+        const payload = (parsed.data ?? parsed) as BaseEvent & { type?: string };
+        subscriber.next((payload.type ? payload : { ...payload, type: eventName ?? "RAW" }) as BaseEvent);
+      };
+      while (true) { const next = await reader.read(); if (next.done) break; buffer += decoder.decode(next.value, { stream: true }); const chunks = buffer.split(/\r?\n\r?\n/); buffer = chunks.pop() ?? ""; for (const chunk of chunks) deliver(chunk); }
+      if (buffer.trim()) deliver(buffer);
+      subscriber.complete();
+    } catch (error) { if (!abort.signal.aborted) subscriber.error(error); } })(); return () => abort.abort(); });
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<any> { const response = await this.doFetch(this.baseUrl + path, { ...init, headers: headersFor(init, this.extraHeaders) }); if (!response.ok) throw new Error(`research runtime request failed: ${response.status}`); return response.status === 204 ? undefined : response.json(); }

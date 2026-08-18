@@ -12,6 +12,7 @@ export type AppOptions = {
 
 export async function createApp(options: AppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify();
+  app.get("/health", async () => ({ ok: true }));
   const client = options.researchClient ?? new ResearchClient(process.env.IRA_RESEARCH_SERVICE_URL ?? "http://127.0.0.1:8000");
   const controller = new RunController({
     client,
