@@ -6,6 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../../apps/chat-backend/src/app.js";
 import { FakeAgentSession } from "./fake-agent-session.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 
 function fakeClient() {
   const events = new Map<string, any[]>();
@@ -32,6 +34,37 @@ function fakeClient() {
 }
 
 describe("AG-UI runtime process contract", () => {
+  it("discovers capabilities through a real Python research-service process", async () => {
+    const researchPort = await freePort();
+    const runtimePort = await freePort();
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "ira-task9-"));
+    const python = spawn("python", [path.join(path.dirname(fileURLToPath(import.meta.url)), "python_server.py"), path.join(tempDir, "research.duckdb"), String(researchPort)], {
+      cwd: path.resolve("services/research"),
+      env: { ...process.env, PYTHONPATH: path.resolve("services/research") },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const tsx = path.resolve("node_modules/.bin/tsx");
+    const runtime = spawn(tsx, [path.resolve("apps/copilot-runtime/src/server.ts")], {
+      env: { ...process.env, PORT: String(runtimePort), IRA_RESEARCH_SERVICE_URL: `http://127.0.0.1:${researchPort}` },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    try {
+      await waitFor(`http://127.0.0.1:${researchPort}/v1/threads`);
+      await waitFor(`http://127.0.0.1:${runtimePort}/health`);
+      const created = await fetch(`http://127.0.0.1:${researchPort}/v1/threads`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+      expect(created.status).toBe(201);
+      const info = await fetch(`http://127.0.0.1:${runtimePort}/info`);
+      expect(info.status).toBe(200);
+      const payload = await info.json() as { agents: Array<{ name: string; capabilities: unknown }> };
+      expect(payload.agents.map((agent) => agent.name)).toContain("research-agent");
+      expect(payload.agents[0]?.capabilities).toBeDefined();
+    } finally {
+      await stopProcess(runtime);
+      await stopProcess(python);
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("crosses a child-process runtime boundary and preserves persisted SSE ids", async () => {
     const port = await freePort();
     const tsx = path.resolve("node_modules/.bin/tsx");
@@ -100,4 +133,13 @@ async function waitFor(url: string): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`timed out waiting for ${url}`);
+}
+
+async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill("SIGTERM");
+  await Promise.race([
+    once(child, "exit"),
+    new Promise((resolve) => setTimeout(() => { child.kill("SIGKILL"); resolve(undefined); }, 2_000)),
+  ]);
 }
