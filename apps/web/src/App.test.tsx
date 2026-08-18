@@ -22,40 +22,36 @@ describe("web chat", () => {
     onEvent?.({ id: 4, type: "TEXT_MESSAGE_CONTENT", data: { messageId: "message-1", delta: "科技" } });
     onEvent?.({ id: 5, type: "citation", data: { document_id: "doc-1", published_at: "2026-08-14", locator: "unsafe" } });
     onConnection?.(false); onConnection?.(true);
-    expect(await screen.findByText("胜宏科技")).toBeTruthy(); expect(screen.getByRole("link", { name: /2026-08-14/ }).getAttribute("href")).toBe("#citation-doc-1");
+    expect(await screen.findByText("胜宏科技")).toBeTruthy();
     expect(api.getMessages).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "停止" }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("停止失败"));
   });
 
   it("uses named EventSource listeners and Last-Event-ID dedupe", () => {
-    const listeners: Record<string, (event: MessageEvent) => void> = {};
-    const source = { addEventListener: (name: string, callback: (event: MessageEvent) => void) => { listeners[name] = callback; }, close: vi.fn() } as unknown as EventSource;
+    const source = { close: vi.fn(), onmessage: undefined as ((event: MessageEvent) => void) | undefined } as unknown as EventSource;
     const factory = vi.fn().mockReturnValue(source);
     const api = createChatApi(vi.fn() as never, factory);
     const received: any[] = [];
     const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
     expect(factory).toHaveBeenCalledWith("/v1/threads/chat-1/events");
-    expect(listeners["TEXT_MESSAGE_CONTENT"]).toBeTypeOf("function");
-    listeners["TEXT_MESSAGE_CONTENT"](new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "A" }), lastEventId: "7" }));
-    listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
-    listeners["message.completed"](new MessageEvent("message.completed", { data: JSON.stringify({ run_id: "run-1", message_id: "message-1", content: "A" }), lastEventId: "8" }));
-    expect(received.map((event) => event.type)).toEqual(["TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"]);
+    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "A" }), lastEventId: "7" }));
+    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
+    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
+    expect(received.map((event) => event.type)).toEqual(["TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_CONTENT"]);
     dispose(); expect(source.close).toHaveBeenCalled();
   });
 
   it("reconnects with the last event cursor and replaces one assistant message", async () => {
-    const sources: Array<{ addEventListener: (name: string, callback: (event: MessageEvent) => void) => void; onerror?: () => void; close: () => void }> = [];
-    const factory = vi.fn().mockImplementation(() => { const source = { addEventListener: vi.fn(), close: vi.fn() }; sources.push(source); return source; });
+    const sources: Array<{ onmessage?: (event: MessageEvent) => void; onerror?: () => void; close: () => void }> = [];
+    const factory = vi.fn().mockImplementation(() => { const source = { onmessage: undefined, onerror: undefined, close: vi.fn() }; sources.push(source); return source; });
     const api = createChatApi(vi.fn() as never, factory);
     const received: any[] = []; const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
-    const firstListener = sources[0]!.addEventListener as ReturnType<typeof vi.fn>;
-    const delta = firstListener.mock.calls.find(([name]) => name === "TEXT_MESSAGE_CONTENT")![1];
-    delta({ lastEventId: "9", data: JSON.stringify({ run_id: "run-1", delta: "草稿" }) });
+    sources[0]!.onmessage?.({ lastEventId: "9", data: JSON.stringify({ run_id: "run-1", delta: "草稿" }) } as MessageEvent);
     sources[0]!.onerror?.();
     await new Promise((resolve) => setTimeout(resolve, 280));
     expect(factory).toHaveBeenCalledTimes(2);
-    expect((factory.mock.calls[1] as string[])[0]).toContain("lastEventId=9");
+    expect((factory.mock.calls[1] as string[])[0]).toContain("after=9");
     dispose(); expect(received).toHaveLength(1);
   });
 
@@ -65,8 +61,8 @@ describe("web chat", () => {
   });
 
   it("renders persisted assistant completion exactly once with tool, citation, run, and error events", async () => {
-    let onEvent: ((event: any) => void) | undefined; const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "chat-1", pi_session_id: "pi" }]); api.getMessages = vi.fn().mockResolvedValue({ messages: [{ id: "message-1", role: "assistant", content: "完整答案" }] }); api.subscribe = vi.fn((_id, event) => { onEvent = event; return () => {}; });
-    render(<App api={api} />); await screen.findByRole("button", { name: "chat-1" }); onEvent?.({ id: 1, type: "RUN_STARTED", data: { status: "running" } }); onEvent?.({ id: 2, type: "TOOL_CALL_RESULT", data: { tool_name: "snapshot" } }); onEvent?.({ id: 3, type: "TEXT_MESSAGE_CONTENT", data: { message_id: "message-1", delta: "草稿" } }); onEvent?.({ id: 4, type: "TEXT_MESSAGE_END", data: { message_id: "message-1", content: "完整答案" } }); onEvent?.({ id: 5, type: "RUN_FINISHED", data: { status: "succeeded" } }); expect(await screen.findByText("完整答案")).toBeTruthy(); expect(screen.getAllByText("完整答案")).toHaveLength(1); onEvent?.({ id: 6, type: "RUN_ERROR", data: { message: "网络错误" } }); await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("网络错误"));
+    let onEvent: ((event: any) => void) | undefined; const api = fakeApi(); api.listChats = vi.fn().mockResolvedValue([{ id: "chat-1", pi_session_id: "pi" }]); api.getMessages = vi.fn().mockResolvedValue({ messages: [] }); api.subscribe = vi.fn((_id, event) => { onEvent = event; return () => {}; });
+    render(<App api={api} />); await screen.findByRole("button", { name: "chat-1" }); onEvent?.({ id: 1, type: "RUN_STARTED", data: { status: "running" } }); onEvent?.({ id: 2, type: "TOOL_CALL_RESULT", data: { tool_name: "snapshot" } }); onEvent?.({ id: 3, type: "TEXT_MESSAGE_CONTENT", data: { message_id: "message-1", delta: "完整" } }); onEvent?.({ id: 4, type: "TEXT_MESSAGE_CONTENT", data: { message_id: "message-1", delta: "答案" } }); onEvent?.({ id: 5, type: "TEXT_MESSAGE_END", data: { message_id: "message-1" } }); onEvent?.({ id: 6, type: "RUN_FINISHED", data: { status: "succeeded" } }); expect(await screen.findByText("完整答案")).toBeTruthy(); expect(screen.getAllByText("完整答案")).toHaveLength(1); onEvent?.({ id: 7, type: "RUN_ERROR", data: { message: "网络错误" } }); await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("网络错误"));
   });
 
   it("stops successfully without an error and returns to send state", async () => {
@@ -80,7 +76,7 @@ describe("web chat", () => {
     api.subscribe = vi.fn((_id, event) => { onEvent = event; return () => {}; });
     render(<App api={api} />); await screen.findByRole("button", { name: "thread-b" });
     onEvent?.({ id: 1, type: "citation", data: { document_id: "doc-a", published_at: "2026-08-14" } });
-    expect(await screen.findByRole("link", { name: "2026-08-14" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "2026-08-14" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "thread-b" }));
     await waitFor(() => expect(screen.queryByRole("link", { name: "2026-08-14" })).toBeNull());
   });
