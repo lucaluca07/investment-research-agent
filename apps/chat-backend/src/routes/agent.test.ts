@@ -27,6 +27,7 @@ function setup() {
       done: Promise.resolve(),
     })),
     subscribe: vi.fn(() => () => undefined),
+    getActive: vi.fn(() => undefined),
     stop: vi.fn(async () => ({ id: "r", status: "cancelled" })),
   } as any;
   return { app, client, controller };
@@ -66,7 +67,7 @@ describe("AG-UI agent routes", () => {
     expect(controller.stop).toHaveBeenCalledWith("t");
   });
 
-  it("serves standard and compatibility SSE paths and maps active conflict", async () => {
+  it("starts a run with JSON so the browser can subscribe separately", async () => {
     const { app, client, controller } = setup();
     client.listAguiEvents.mockResolvedValue([
       {
@@ -83,8 +84,9 @@ describe("AG-UI agent routes", () => {
       url: "/v1/threads/t/runs",
       payload: { input: "x", idempotency_key: "k" },
     });
-    expect(standard.statusCode).toBe(200);
-    expect(standard.headers["content-type"]).toContain("text/event-stream");
+    expect(standard.statusCode).toBe(202);
+    expect(standard.headers["content-type"]).toContain("application/json");
+    expect(standard.json()).toMatchObject({ run: { id: "r" } });
     expect(controller.start).toHaveBeenCalledTimes(1);
     controller.start.mockRejectedValueOnce(
       new Error("thread already has an active run"),
@@ -136,9 +138,8 @@ describe("AG-UI agent routes", () => {
     });
     await registerAgentRoutes(app, client, controller);
     const response = await app.inject({
-      method: "POST",
-      url: "/v1/threads/t/runs",
-      payload: { input: "x", idempotency_key: "k" },
+      method: "GET",
+      url: "/v1/threads/t/events",
     });
     expect(response.body.match(/TEXT_MESSAGE_CONTENT/g)?.length).toBe(1);
   });

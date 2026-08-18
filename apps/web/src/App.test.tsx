@@ -29,15 +29,21 @@ describe("web chat", () => {
   });
 
   it("uses named EventSource listeners and Last-Event-ID dedupe", () => {
-    const source = { close: vi.fn(), onmessage: undefined as ((event: MessageEvent) => void) | undefined } as unknown as EventSource;
+    const listeners = new Map<string, (event: MessageEvent) => void>();
+    const source = {
+      close: vi.fn(),
+      onmessage: undefined as ((event: MessageEvent) => void) | undefined,
+      addEventListener: vi.fn((name: string, listener: (event: MessageEvent) => void) => listeners.set(name, listener)),
+    } as unknown as EventSource;
     const factory = vi.fn().mockReturnValue(source);
     const api = createChatApi(vi.fn() as never, factory);
     const received: any[] = [];
     const dispose = api.subscribe("chat-1", (event) => received.push(event), vi.fn());
     expect(factory).toHaveBeenCalledWith("/v1/threads/chat-1/events");
-    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "A" }), lastEventId: "7" }));
-    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
-    source.onmessage?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
+    expect(listeners.has("TEXT_MESSAGE_CONTENT")).toBe(true);
+    listeners.get("TEXT_MESSAGE_CONTENT")?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "A" }), lastEventId: "7" }));
+    listeners.get("TEXT_MESSAGE_CONTENT")?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
+    listeners.get("TEXT_MESSAGE_CONTENT")?.(new MessageEvent("TEXT_MESSAGE_CONTENT", { data: JSON.stringify({ messageId: "message-1", delta: "B" }), lastEventId: "8" }));
     expect(received.map((event) => event.type)).toEqual(["TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_CONTENT"]);
     dispose(); expect(source.close).toHaveBeenCalled();
   });

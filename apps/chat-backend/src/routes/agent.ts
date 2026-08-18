@@ -8,7 +8,7 @@ export async function registerAgentRoutes(
   client: ResearchClient,
   controller: RunController,
 ): Promise<void> {
-  const streamRun = async (request: any, reply: any) => {
+  const startRun = async (request: any, reply: any) => {
     const threadId = (request.params as { threadId: string }).threadId;
     const body = (request.body ?? {}) as {
       input?: unknown;
@@ -24,38 +24,11 @@ export async function registerAgentRoutes(
         body.idempotency_key,
         body.model,
       );
-      reply.hijack();
-      reply.raw.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
+      return reply.code(result.replayed ? 200 : 202).send({
+        run: result.run,
+        replayed: result.replayed,
+        last_event_seq: result.last_event_seq,
       });
-      const seen = new Set<number>();
-      const write = (event: any) => {
-        const seq = event.sequence;
-        if (typeof seq === "number" && seen.has(seq)) return;
-        if (typeof seq === "number") seen.add(seq);
-        const id = typeof event.sequence === "number" ? event.sequence : seq;
-        reply.raw.write(
-          `id: ${id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data ?? event)}\n\n`,
-        );
-      };
-      let replaying = true;
-      const pending: unknown[] = [];
-      const unsubscribe = controller.subscribe(threadId, (event) => {
-        if (replaying) pending.push(event);
-        else write(event);
-      });
-      const headerCursor = Number(request.headers["last-event-id"] ?? 0);
-      const queryCursor = Number((request.query as { after?: string }).after ?? 0);
-      for (const event of await client.listAguiEvents(threadId, Math.max(headerCursor || 0, queryCursor || 0)))
-        write(event);
-      replaying = false;
-      for (const event of pending) write(event);
-      request.raw.on("close", unsubscribe);
-      await result.done;
-      unsubscribe();
-      reply.raw.end();
     } catch (error) {
       if (!reply.sent)
         return reply
@@ -69,14 +42,39 @@ export async function registerAgentRoutes(
           });
     }
   };
-  app.post("/v1/threads/:threadId/runs", streamRun);
-  app.get("/v1/threads/:threadId/events", async (request) => {
+  app.post("/v1/threads/:threadId/runs", startRun);
+  app.get("/v1/threads/:threadId/events", async (request, reply) => {
+    const threadId = (request.params as { threadId: string }).threadId;
     const q = request.query as { after?: string };
     const headerCursor = Number(request.headers["last-event-id"] ?? 0);
-    return client.listAguiEvents(
-      (request.params as { threadId: string }).threadId,
-      Math.max(Number(q.after ?? 0), Number.isFinite(headerCursor) ? headerCursor : 0),
-    );
+    const after = Math.max(Number(q.after ?? 0), Number.isFinite(headerCursor) ? headerCursor : 0);
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    const seen = new Set<number>();
+    const write = (event: any) => {
+      if (!Number.isInteger(event?.sequence) || seen.has(event.sequence)) return;
+      seen.add(event.sequence);
+      reply.raw.write(`id: ${event.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event.data ?? {})}\n\n`);
+    };
+    let replaying = true;
+    const pending: unknown[] = [];
+    const unsubscribe = controller.subscribe(threadId, (event) => {
+      if (replaying) pending.push(event);
+      else write(event);
+    });
+    for (const event of await client.listAguiEvents(threadId, after)) write(event);
+    replaying = false;
+    for (const event of pending) write(event);
+    if (!controller.getActive(threadId)) {
+      unsubscribe();
+      reply.raw.end();
+      return;
+    }
+    request.raw.once("close", unsubscribe);
   });
   app.get("/v1/threads/:threadId/state", async (request) =>
     client.getAguiState((request.params as { threadId: string }).threadId),

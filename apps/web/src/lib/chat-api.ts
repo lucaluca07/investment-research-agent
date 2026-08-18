@@ -9,6 +9,13 @@ export interface ChatApi {
   subscribe(chatId: string, onEvent: (event: ChatEvent) => void, onConnection: (connected: boolean) => void): () => void;
 }
 
+const AG_UI_EVENT_TYPES = [
+  "RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "STEP_STARTED", "STEP_FINISHED",
+  "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
+  "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
+  "STATE_SNAPSHOT", "STATE_DELTA", "MESSAGES_SNAPSHOT", "RAW",
+] as const;
+
 export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: string) => new EventSource(url)): ChatApi {
   const request = async <T>(url: string, init?: RequestInit): Promise<T> => {
     const response = await fetcher(url, { headers: { "content-type": "application/json" }, ...init });
@@ -30,7 +37,14 @@ export function createChatApi(fetcher = globalThis.fetch, sourceFactory = (url: 
         source = sourceFactory(`/v1/threads/${encodeURIComponent(chatId)}/events${lastId ? `?after=${lastId}` : ""}`);
         source.onopen = () => onConnection(true);
         source.onerror = () => { onConnection(false); source?.close(); setTimeout(connect, 250); };
-        source.onmessage = (message) => { const eventMessage = message as MessageEvent; const event = { id: Number(eventMessage.lastEventId), type: eventMessage.type || "message", data: JSON.parse(eventMessage.data) }; if (event.id > lastId) { lastId = event.id; onEvent(event); } };
+        const handleMessage = (message: MessageEvent) => {
+          let data: Record<string, unknown>;
+          try { data = JSON.parse(message.data) as Record<string, unknown>; } catch { return; }
+          const event = { id: Number(message.lastEventId), type: message.type || "message", data };
+          if (Number.isFinite(event.id) && event.id > lastId) { lastId = event.id; onEvent(event); }
+        };
+        source.onmessage = handleMessage;
+        for (const type of AG_UI_EVENT_TYPES) source.addEventListener?.(type, handleMessage as EventListener);
       };
       connect();
       return () => { stopped = true; source?.close(); };
