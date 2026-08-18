@@ -38,7 +38,8 @@ describe("AG-UI runtime process contract", () => {
     const researchPort = await freePort();
     const runtimePort = await freePort();
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "ira-task9-"));
-    const python = spawn("python", [path.join(path.dirname(fileURLToPath(import.meta.url)), "python_server.py"), path.join(tempDir, "research.duckdb"), String(researchPort)], {
+    const pythonExecutable = process.env.IRA_E2E_PYTHON ?? path.resolve("services/research/.venv/bin/python");
+    const python = spawn(pythonExecutable, [path.join(path.dirname(fileURLToPath(import.meta.url)), "python_server.py"), path.join(tempDir, "research.duckdb"), String(researchPort)], {
       cwd: path.resolve("services/research"),
       env: { ...process.env, PYTHONPATH: path.resolve("services/research") },
       stdio: ["ignore", "pipe", "inherit"],
