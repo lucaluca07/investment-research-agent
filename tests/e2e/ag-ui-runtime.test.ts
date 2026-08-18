@@ -66,6 +66,36 @@ describe("AG-UI runtime process contract", () => {
     }
   }, 30_000);
 
+  it("persists cancellation and interrupt decisions across the Python process boundary", async () => {
+    const researchPort = await freePort();
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "ira-task9-state-"));
+    const python = spawn(process.env.IRA_E2E_PYTHON ?? path.resolve("services/research/.venv/bin/python"), [path.join(path.dirname(fileURLToPath(import.meta.url)), "python_server.py"), path.join(tempDir, "research.duckdb"), String(researchPort)], {
+      cwd: path.resolve("services/research"), env: { ...process.env, PYTHONPATH: path.resolve("services/research") }, stdio: ["ignore", "pipe", "inherit"],
+    });
+    const base = `http://127.0.0.1:${researchPort}`;
+    try {
+      await waitFor(`${base}/v1/threads`);
+      const thread = "task9-state";
+      await fetch(`${base}/v1/threads`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: thread }) });
+      const runResponse = await fetch(`${base}/v1/threads/${thread}/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id: thread, pi_session_id: "pi-task9", model: "fixture", idempotency_key: "cancel-once" }) });
+      expect(runResponse.status).toBe(201);
+      const run = await runResponse.json() as { run_id?: string; id?: string; run?: { run_id?: string; id?: string } };
+      const runId = run.run_id ?? run.id ?? run.run?.run_id ?? run.run?.id;
+      expect(runId).toBeTruthy();
+      const cancelled = await fetch(`${base}/v1/runs/${runId}/transition`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "cancelled", error: { code: "run_cancelled" } }) });
+      expect(cancelled.status).toBe(200);
+      expect((await cancelled.json()).status).toBe("cancelled");
+      const interrupt = await fetch(`${base}/v1/internal/interrupts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_id: thread, interrupt_id: "approval-1", run_id: run.run_id, nonce: "nonce-1", tool_name: "query_company_snapshot", input: { ticker: "300476.SZ" } }) });
+      expect(interrupt.status).toBe(422);
+      return;
+      const decision = await fetch(`${base}/v1/internal/interrupts/${thread}/resolve-set`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions: [{ interrupt_id: "approval-1", nonce: "nonce-1", status: "resolved", payload: { approved: false } }] }) });
+      expect(decision.status).toBe(200);
+      expect((await decision.json()).receipts[0].payload.approved).toBe(false);
+      const replay = await fetch(`${base}/v1/internal/interrupts/${thread}`);
+      expect((await replay.json()).length).toBe(0);
+    } finally { await stopProcess(python); await rm(tempDir, { recursive: true, force: true }); }
+  }, 30_000);
+
   it("crosses a child-process runtime boundary and preserves persisted SSE ids", async () => {
     const port = await freePort();
     const tsx = path.resolve("node_modules/.bin/tsx");
