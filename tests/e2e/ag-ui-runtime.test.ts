@@ -166,7 +166,8 @@ describe("AG-UI runtime process contract", () => {
         body: JSON.stringify(request),
       });
       const firstText = await first.text();
-      const firstIds = sseIds(firstText);
+      const firstEvents = sseEvents(firstText);
+      const firstIds = firstEvents.map((event) => event.sequence);
       expect(first.status).toBe(200);
       expect(firstIds.length).toBeGreaterThanOrEqual(3);
       expect(firstIds).toEqual([...firstIds].sort((left, right) => left - right));
@@ -176,7 +177,8 @@ describe("AG-UI runtime process contract", () => {
         headers: { "content-type": "application/json", "last-event-id": String(firstIds[0]) },
         body: JSON.stringify(request),
       });
-      const reconnectIds = sseIds(await reconnect.text());
+      const reconnectText = await reconnect.text();
+      const reconnectIds = sseEvents(reconnectText).map((event) => event.sequence);
       expect(reconnect.status).toBe(200);
       expect(reconnectIds.length).toBeGreaterThan(0);
       expect(reconnectIds.every((id) => id > firstIds[0]!)).toBe(true);
@@ -186,9 +188,18 @@ describe("AG-UI runtime process contract", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request),
       });
-      const duplicateIds = sseIds(await duplicate.text());
+      const duplicateText = await duplicate.text();
+      const duplicateIds = sseEvents(duplicateText).map((event) => event.sequence);
       expect(duplicate.status).toBe(200);
       expect(duplicateIds).toEqual(firstIds);
+      const rendered = applySseReplay(firstText, reconnectText, duplicateText);
+      const assistantMessageIds = rendered
+        .filter((event) => event.type === "TEXT_MESSAGE_START")
+        .map((event) => event.data.messageId);
+      expect(assistantMessageIds).toEqual([expect.any(String)]);
+      expect(new Set(assistantMessageIds).size).toBe(assistantMessageIds.length);
+      expect(rendered.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => event.data.messageId))
+        .toEqual(assistantMessageIds);
       const state = await json(`${stack.researchBase}/v1/threads/${thread}/state`) as { runs: unknown[] };
       expect(state.runs).toHaveLength(1);
     } finally {
@@ -197,8 +208,25 @@ describe("AG-UI runtime process contract", () => {
   }, 45_000);
 });
 
-function sseIds(text: string): number[] {
-  return [...text.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+type SseEvent = { sequence: number; type: string; data: { messageId?: string } };
+
+function sseEvents(text: string): SseEvent[] {
+  return text.trim().split("\n\n").filter(Boolean).map((frame) => {
+    const id = frame.match(/^id: (\d+)$/m)?.[1];
+    const type = frame.match(/^event: (.+)$/m)?.[1];
+    const data = frame.match(/^data: (.+)$/m)?.[1];
+    if (!id || !type || !data) throw new Error(`malformed AG-UI SSE frame: ${frame}`);
+    return { sequence: Number(id), type, data: JSON.parse(data) as { messageId?: string } };
+  });
+}
+
+function applySseReplay(...streams: string[]): SseEvent[] {
+  const seen = new Set<number>();
+  return streams.flatMap(sseEvents).filter((event) => {
+    if (seen.has(event.sequence)) return false;
+    seen.add(event.sequence);
+    return true;
+  });
 }
 
 async function freePort(): Promise<number> {
