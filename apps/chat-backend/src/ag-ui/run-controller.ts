@@ -582,16 +582,31 @@ function promptText(input: unknown): string {
           "role" in item &&
           (item as any).role === "user",
       );
-    if (last && typeof (last as any).content === "string")
-      return (last as any).content;
+    if (last) {
+      const content = contentText((last as any).content);
+      if (content) return content;
+    }
   }
   if (
     input &&
     typeof input === "object" &&
-    typeof (input as any).content === "string"
-  )
-    return (input as any).content;
+    Array.isArray((input as any).messages)
+  ) return promptText((input as any).messages);
+  if (input && typeof input === "object") {
+    const content = contentText((input as any).content);
+    if (content) return content;
+  }
   return JSON.stringify(input);
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(contentText).join("");
+  if (content && typeof content === "object") {
+    if (typeof (content as any).text === "string") return (content as any).text;
+    if (typeof (content as any).content === "string") return (content as any).content;
+  }
+  return "";
 }
 
 function uniqueContext(values: unknown[]): unknown[] {

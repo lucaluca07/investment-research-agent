@@ -24,38 +24,6 @@ class RequestModel(BaseModel):
         return value
 
 
-class ChatRequest(RequestModel):
-    chat_id: str | None = None
-    pi_session_id: str | None = None
-
-
-class PiSessionRequest(RequestModel):
-    pi_session_id: str
-
-
-class MessageRequest(RequestModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str = Field(min_length=1)
-    idempotency_key: str | None = None
-
-
-class RunRequest(RequestModel):
-    chat_id: str
-    pi_session_id: str
-    model: str
-    idempotency_key: str | None = None
-
-
-class RunStatusRequest(RequestModel):
-    status: Literal["running", "succeeded", "failed", "cancelled"]
-    error: dict[str, Any] | None = None
-
-
-class EventRequest(RequestModel):
-    type: str
-    data: dict[str, Any]
-
-
 class SnapshotRequest(RequestModel):
     ticker: str
 

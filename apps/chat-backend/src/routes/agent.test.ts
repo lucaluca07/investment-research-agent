@@ -131,6 +131,64 @@ describe("AG-UI agent routes", () => {
     ).toBe(409);
   });
 
+  it("accepts the standard AG-UI messages envelope and forwards its last user prompt", async () => {
+    const { app, controller } = setup();
+    await registerAgentRoutes(app, {} as any, controller);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/threads/t/runs",
+      payload: {
+        runId: "agui-run",
+        idempotency_key: "standard-message",
+        messages: [
+          { id: "system", role: "system", content: "context" },
+          { id: "user", role: "user", content: [{ type: "text", text: "research AI PCB" }] },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(controller.start).toHaveBeenCalledWith(
+      "t",
+      expect.objectContaining({
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "user", content: [{ type: "text", text: "research AI PCB" }] }),
+        ]),
+      }),
+      "standard-message",
+      undefined,
+    );
+  });
+
+  it("rejects a standard AG-UI envelope without usable user content", async () => {
+    const { app, controller } = setup();
+    await registerAgentRoutes(app, {} as any, controller);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/threads/t/runs",
+      payload: { idempotency_key: "empty-message", messages: [{ role: "user", content: [] }] },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(controller.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit input as the run input when AG-UI messages are also present", async () => {
+    const { app, controller } = setup();
+    await registerAgentRoutes(app, {} as any, controller);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/threads/t/runs",
+      payload: { idempotency_key: "explicit-input", input: "explicit prompt", messages: [{ role: "user", content: "ignored" }] },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(controller.start).toHaveBeenCalledWith("t", "explicit prompt", "explicit-input", undefined);
+  });
+
   it("closes the replay-subscribe window with sequence de-duplication", async () => {
     const { app, client, controller } = setup();
     let live: ((event: unknown) => void) | undefined;

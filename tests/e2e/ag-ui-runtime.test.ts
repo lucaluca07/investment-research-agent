@@ -208,6 +208,34 @@ describe.sequential("AG-UI runtime process contract", () => {
       await stack.stop();
     }
   }, 45_000);
+
+  it("forwards standard RunAgentInput messages through all three processes to Pi", async () => {
+    const stack = await startDurableStack("standard-run-agent-input");
+    const thread = "task9-standard-run-agent-input";
+    try {
+      await json(`${stack.researchBase}/v1/threads`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: thread }),
+      });
+      const response = await fetch(`${stack.runtimeBase}/agent/research-agent/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          threadId: thread,
+          runId: "standard-agui-run",
+          messages: [
+            { id: "old", role: "user", content: "old prompt" },
+            { id: "new", role: "user", content: [{ type: "text", text: "research standard AG-UI PCB" }] },
+          ],
+        }),
+      });
+      const events = sseEvents(await response.text());
+      expect(response.status).toBe(200);
+      expect(events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => (event.data as any).delta))
+        .toContain("research standard AG-UI PCB");
+    } finally {
+      await stack.stop();
+    }
+  }, 45_000);
 });
 
 type SseEvent = { sequence: number; type: string; data: { messageId?: string } };

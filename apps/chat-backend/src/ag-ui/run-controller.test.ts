@@ -92,6 +92,25 @@ describe("RunController", () => {
     ).toBe(true);
   });
 
+  it("prompts Pi with the last user text from standard AG-UI message parts", async () => {
+    const c = client();
+    const prompt = vi.fn(async () => undefined);
+    const controller = new RunController({
+      client: c,
+      sessionFactory: async () => ({ prompt, subscribe: () => () => undefined }),
+    });
+
+    await (await controller.start("thread-1", {
+      messages: [
+        { role: "user", content: "old question" },
+        { role: "assistant", content: "old answer" },
+        { role: "user", content: [{ type: "text", text: "research high-end PCB" }] },
+      ],
+    }, "message-parts")).done;
+
+    expect(prompt).toHaveBeenCalledWith("research high-end PCB");
+  });
+
   it("aborts and persists non-retryable cancellation", async () => {
     const c = client();
     let resolve!: () => void;

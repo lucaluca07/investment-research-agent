@@ -33,15 +33,22 @@ export async function registerAgentRoutes(
     const threadId = (request.params as { threadId: string }).threadId;
     const body = (request.body ?? {}) as {
       input?: unknown;
+      messages?: unknown;
       idempotency_key?: string;
       model?: string;
     };
     if (!body.idempotency_key?.trim())
       return reply.code(422).send({ detail: "idempotency_key is required" });
+    // RunAgentInput carries the prompt in `messages`, not in the legacy
+    // `input` convenience field.  Keep the full envelope for persistence and
+    // let RunController derive the last user turn for Pi.
+    const input = body.input !== undefined ? body.input : aguiMessagesInput(body.messages);
+    if (input === undefined)
+      return reply.code(422).send({ detail: "a non-empty user message or input is required" });
     try {
       const result = await controller.start(
         threadId,
-        body.input ?? "",
+        input,
         body.idempotency_key,
         body.model,
       );
@@ -258,4 +265,27 @@ export async function registerAgentRoutes(
       }
     },
   );
+}
+
+function aguiMessagesInput(messages: unknown): { messages: unknown[] } | undefined {
+  if (!Array.isArray(messages) || !messages.some(isUsableUserMessage)) return undefined;
+  return { messages };
+}
+
+function isUsableUserMessage(message: unknown): boolean {
+  return isRecord(message) && message.role === "user" && contentText(message.content).trim().length > 0;
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map(contentText).join("");
+  if (isRecord(content)) {
+    if (typeof content.text === "string") return content.text;
+    if (typeof content.content === "string") return content.content;
+  }
+  return "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }

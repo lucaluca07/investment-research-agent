@@ -18,30 +18,6 @@ export type SaveResearchNoteRequest = {
   body: string;
   citation_ids: string[];
 };
-export type Chat = { id: string; pi_session_id: string };
-export type ChatMessage = {
-  id: string;
-  chat_id: string;
-  role: "user" | "assistant" | "tool";
-  content: string;
-  created_at: string;
-};
-export type ChatHistory = { messages: ChatMessage[] };
-export type ResearchRun = {
-  id: string;
-  chat_id: string;
-  pi_session_id: string;
-  model: string;
-  status: "running" | "succeeded" | "failed" | "cancelled";
-  error: Record<string, unknown> | null;
-  created_at: string;
-  replayed?: boolean;
-};
-export type PersistedChatEvent = {
-  id: number;
-  type: string;
-  data: Record<string, unknown>;
-};
 export type AguiThread = {
   id: string;
   title: string;
@@ -414,41 +390,6 @@ export class ResearchClient {
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
-function parseChat(value: unknown): Chat {
-  if (
-    !isObject(value) ||
-    typeof value.id !== "string" ||
-    typeof value.pi_session_id !== "string"
-  )
-    throw new ResearchClientError("invalid chat response", 200, value);
-  return value as unknown as Chat;
-}
-function parseRun(value: unknown): ResearchRun {
-  const statuses = ["running", "succeeded", "failed", "cancelled"];
-  if (
-    !isObject(value) ||
-    typeof value.id !== "string" ||
-    typeof value.chat_id !== "string" ||
-    typeof value.pi_session_id !== "string" ||
-    typeof value.model !== "string" ||
-    typeof value.created_at !== "string" ||
-    !statuses.includes(String(value.status)) ||
-    !("error" in value) ||
-    (value.error !== null && !isObject(value.error))
-  )
-    throw new ResearchClientError("invalid run response", 200, value);
-  return value as unknown as ResearchRun;
-}
-function parseEvent(value: unknown): PersistedChatEvent {
-  if (
-    !isObject(value) ||
-    typeof value.id !== "number" ||
-    typeof value.type !== "string" ||
-    !isObject(value.data)
-  )
-    throw new ResearchClientError("invalid event response", 200, value);
-  return value as unknown as PersistedChatEvent;
-}
 function parseCreateRunResult(value: unknown): CreateRunResult {
   if (
     !isObject(value) ||

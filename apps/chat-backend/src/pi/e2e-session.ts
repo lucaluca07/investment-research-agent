@@ -12,7 +12,7 @@ export class E2eSession {
     return () => { this.listener = undefined; };
   }
 
-  async prompt(): Promise<void> {
+  async prompt(input: string): Promise<void> {
     const message = { role: "assistant", content: [] };
     this.listener?.({ type: "turn_start" });
     this.listener?.({ type: "message_start", message });
@@ -22,7 +22,9 @@ export class E2eSession {
       assistantMessageEvent: {
         type: "text_delta",
         contentIndex: 0,
-        delta: "Victory Giant",
+        // Echo the received prompt so the process-boundary test proves the
+        // Runtime -> Fastify -> RunController -> Pi path did not discard it.
+        delta: input,
         partial: message,
       },
     });
