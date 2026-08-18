@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApp } from "../../apps/chat-backend/src/app.js";
 import { FakeAgentSession } from "./fake-agent-session.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 
 function fakeClient() {
@@ -99,6 +99,79 @@ describe("AG-UI runtime process contract", () => {
     } finally { await stopProcess(python); await rm(tempDir, { recursive: true, force: true }); }
   }, 30_000);
 
+  it("resolves an approve/reject/cancel decision set through child Fastify and Python processes", async () => {
+    const stack = await startDurableStack("decision-set");
+    const thread = "task9-decision-set";
+    try {
+      const prepared = await createInterruptedRun(stack.researchBase, thread, [
+        { id: "approve", nonce: "approve-nonce", toolCallId: "tool-approve", status: "resolved", approved: true },
+        { id: "reject", nonce: "reject-nonce", toolCallId: "tool-reject", status: "resolved", approved: false },
+        { id: "cancel", nonce: "cancel-nonce", toolCallId: "tool-cancel", status: "cancelled", approved: false },
+      ]);
+      const response = await fetch(`${stack.chatBase}/v1/threads/${thread}/interrupts/resume`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decisions: prepared.decisions }),
+      });
+      expect(response.status).toBe(200);
+      const recovered = await response.json() as { recovery_run_id: string; results: Array<{ operation_id: string; result: unknown }> };
+      expect(recovered.results).toHaveLength(3);
+      expect((recovered.results[0]?.result as { ticker?: string }).ticker).toBe("300476.SZ");
+      expect(recovered.results.slice(1).map((item) => item.result)).toEqual([
+        { status: "rejected", approved: false },
+        { status: "cancelled", approved: false },
+      ]);
+      const events = await json(`${stack.researchBase}/v1/threads/${thread}/events`) as Array<{ run_id: string; type: string; data: { toolCallId?: string } }>;
+      const results = events.filter((event) => event.run_id === recovered.recovery_run_id && event.type === "TOOL_CALL_RESULT");
+      expect(results.map((event) => event.data.toolCallId)).toEqual(["tool-approve", "tool-reject", "tool-cancel"]);
+    } finally { await stack.stop(); }
+  }, 45_000);
+
+  it("recovers after Python, Fastify, and Runtime restart using the same durable state", async () => {
+    const stack = await startDurableStack("restart");
+    const thread = "task9-restart";
+    try {
+      const prepared = await createInterruptedRun(stack.researchBase, thread, [
+        { id: "restart", nonce: "restart-nonce", toolCallId: "old-tool-call", status: "resolved", approved: true },
+      ]);
+      await stack.restart();
+      expect((await fetch(`${stack.runtimeBase}/info`)).status).toBe(200);
+      const response = await fetch(`${stack.chatBase}/v1/threads/${thread}/interrupts/resume`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions: prepared.decisions }),
+      });
+      expect(response.status).toBe(200);
+      const recovered = await response.json() as { recovery_run_id: string };
+      const events = await json(`${stack.researchBase}/v1/threads/${thread}/events`) as Array<{ run_id: string; type: string; data: { toolCallId?: string } }>;
+      expect(events.some((event) => event.run_id === recovered.recovery_run_id && event.type === "TOOL_CALL_RESULT" && event.data.toolCallId === "old-tool-call")).toBe(true);
+      const operation = await json(`${stack.researchBase}/v1/internal/operations/status`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_id: thread, operation_id: prepared.operationIds[0] }),
+      }) as { status: string };
+      expect(operation.status).toBe("succeeded");
+    } finally { await stack.stop(); }
+  }, 60_000);
+
+  it("uses durable recovery_fallback when the recorded Pi session storage is missing", async () => {
+    const stack = await startDurableStack("missing-session");
+    const thread = "task9-missing-session";
+    try {
+      const storage = path.join(stack.runtimeDir, "sessions", "lost", "session");
+      await mkdir(storage, { recursive: true });
+      await writeFile(path.join(storage, "state.json"), "broken before resume");
+      const prepared = await createInterruptedRun(stack.researchBase, thread, [
+        { id: "lost", nonce: "lost-nonce", toolCallId: "historic-tool", status: "resolved", approved: true, storageRef: "sessions/lost/session" },
+      ]);
+      await rm(storage, { recursive: true, force: true });
+      const response = await fetch(`${stack.chatBase}/v1/threads/${thread}/interrupts/resume`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions: prepared.decisions }),
+      });
+      expect(response.status).toBe(200);
+      const recovered = await response.json() as { recovery_run_id: string };
+      const state = await json(`${stack.researchBase}/v1/threads/${thread}/state`) as { runs: Array<{ id: string; status: string }> };
+      expect(state.runs).toContainEqual(expect.objectContaining({ id: recovered.recovery_run_id, status: "completed" }));
+      const events = await json(`${stack.researchBase}/v1/threads/${thread}/events`) as Array<{ run_id: string; type: string; data: { toolCallId?: string } }>;
+      expect(events.some((event) => event.run_id === recovered.recovery_run_id && event.type === "TOOL_CALL_RESULT" && event.data.toolCallId === "historic-tool")).toBe(true);
+    } finally { await stack.stop(); }
+  }, 45_000);
+
   it("crosses a child-process runtime boundary and preserves persisted SSE ids", async () => {
     const port = await freePort();
     const tsx = path.resolve("node_modules/.bin/tsx");
@@ -169,6 +242,17 @@ async function waitFor(url: string): Promise<void> {
   throw new Error(`timed out waiting for ${url}`);
 }
 
+async function waitForResponse(url: string): Promise<void> {
+  for (let index = 0; index < 100; index += 1) {
+    try {
+      await fetch(url);
+      return;
+    } catch { /* process is still starting */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${url}`);
+}
+
 async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
   if (child.exitCode !== null) return;
   child.kill("SIGTERM");
@@ -176,4 +260,84 @@ async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
     once(child, "exit"),
     new Promise((resolve) => setTimeout(() => { child.kill("SIGKILL"); resolve(undefined); }, 2_000)),
   ]);
+}
+
+type DecisionFixture = {
+  id: string;
+  nonce: string;
+  toolCallId: string;
+  status: "resolved" | "cancelled";
+  approved: boolean;
+  storageRef?: string;
+};
+
+async function json(url: string, init?: RequestInit): Promise<unknown> {
+  const response = await fetch(url, init);
+  if (!response.ok) throw new Error(`${init?.method ?? "GET"} ${url} failed: ${response.status} ${await response.text()}`);
+  return response.json();
+}
+
+async function createInterruptedRun(base: string, thread: string, fixtures: DecisionFixture[]) {
+  await json(`${base}/v1/threads`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: thread }) });
+  const created = await json(`${base}/v1/threads/${thread}/runs`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input: { messages: [{ role: "user", content: "recover this research" }] }, idempotency_key: `initial-${thread}`, model: "fixture" }),
+  }) as { run: { id: string } };
+  const runId = created.run.id;
+  const event = await json(`${base}/v1/threads/${thread}/events:batch`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ run_id: runId, events: fixtures.map((fixture) => ({ type: "TOOL_CALL_START", data: { toolCallId: fixture.toolCallId } })) }),
+  }) as { events: Array<{ sequence: number }> };
+  const lastEventSeq = event.events.at(-1)!.sequence;
+  const decisions = [] as Array<{ interrupt_id: string; nonce: string; status: "resolved" | "cancelled"; payload: { approved: boolean } }>;
+  const operationIds: string[] = [];
+  for (const fixture of fixtures) {
+    const interrupt = await json(`${base}/v1/internal/interrupts`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        thread_id: thread, interrupt_id: fixture.id, run_id: runId, nonce: fixture.nonce,
+        tool_name: "query_company_snapshot", input: { ticker: "300476.SZ" }, tool_call_id: fixture.toolCallId,
+        last_event_seq: lastEventSeq, pi_session_id: "expired-pi-session", pi_session_revision: 7,
+        pi_session_storage_ref: fixture.storageRef ?? "sessions/expired/session",
+      }),
+    }) as { operation_id: string };
+    operationIds.push(interrupt.operation_id);
+    decisions.push({ interrupt_id: fixture.id, nonce: fixture.nonce, status: fixture.status, payload: { approved: fixture.approved } });
+  }
+  return { decisions, operationIds };
+}
+
+async function startDurableStack(label: string) {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), `ira-task9-${label}-`));
+  const database = path.join(tempDir, "research.duckdb");
+  const runtimeDir = path.join(tempDir, ".ira-runtime");
+  const researchPort = await freePort();
+  const chatPort = await freePort();
+  const runtimePort = await freePort();
+  const pythonExecutable = process.env.IRA_E2E_PYTHON ?? path.resolve("services/research/.venv/bin/python");
+  const tsx = path.resolve("node_modules/.bin/tsx");
+  let children: Array<ReturnType<typeof spawn>> = [];
+  const researchBase = `http://127.0.0.1:${researchPort}`;
+  const chatBase = `http://127.0.0.1:${chatPort}`;
+  const runtimeBase = `http://127.0.0.1:${runtimePort}`;
+  const launch = async () => {
+    const python = spawn(pythonExecutable, [path.join(path.dirname(fileURLToPath(import.meta.url)), "python_server.py"), database, String(researchPort)], {
+      cwd: path.resolve("services/research"), env: { ...process.env, PYTHONPATH: path.resolve("services/research") }, stdio: ["ignore", "pipe", "inherit"],
+    });
+    const chat = spawn(tsx, [path.resolve("apps/chat-backend/src/server.ts")], {
+      env: { ...process.env, PORT: String(chatPort), IRA_RESEARCH_SERVICE_URL: researchBase, IRA_RUNTIME_DIR: runtimeDir }, stdio: ["ignore", "pipe", "inherit"],
+    });
+    const runtime = spawn(tsx, [path.resolve("apps/copilot-runtime/src/server.ts")], {
+      env: { ...process.env, PORT: String(runtimePort), IRA_RESEARCH_SERVICE_URL: researchBase }, stdio: ["ignore", "pipe", "inherit"],
+    });
+    children = [python, chat, runtime];
+    await Promise.all([waitFor(`${researchBase}/v1/threads`), waitForResponse(`${chatBase}/v1/threads/no-such/state`), waitFor(`${runtimeBase}/health`)]);
+  };
+  const stopChildren = async () => { await Promise.all(children.map(stopProcess)); children = []; };
+  await launch();
+  return {
+    researchBase, chatBase, runtimeBase, runtimeDir,
+    restart: async () => { await stopChildren(); await launch(); },
+    stop: async () => { await stopChildren(); await rm(tempDir, { recursive: true, force: true }); },
+  };
 }

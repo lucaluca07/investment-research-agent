@@ -59,6 +59,17 @@ class AguiStore:
                 event_type = event.get("type") or event.get("event_type")
                 data = event.get("data", event.get("payload", {}))
                 c.execute("INSERT INTO agui_events(thread_id,sequence,run_id,event_type,payload_json) VALUES (?,?,?,?,?::JSON)", [thread_id, seq, run_id, event_type, canonical_json(data)])
+                # Checkpoints reference the original AG-UI tool-call id.  Project
+                # starts at persistence time so that a later interrupt can safely
+                # take a foreign-key reference even after a process restart.
+                if event_type == "TOOL_CALL_START" and isinstance(data, dict):
+                    tool_call_id = data.get("toolCallId")
+                    if isinstance(tool_call_id, str) and tool_call_id:
+                        c.execute(
+                            "INSERT INTO tool_calls(id,thread_id,run_id,tool_name,arguments_json,step_status) "
+                            "VALUES (?,?,?,?,?::JSON,'running') ON CONFLICT(id) DO NOTHING",
+                            [tool_call_id, thread_id, run_id, data.get("toolName"), canonical_json(data.get("args", {}))],
+                        )
                 result.append({"thread_id": thread_id, "sequence": seq, "run_id": run_id, "type": event_type, "data": data})
                 seq += 1
         return result
